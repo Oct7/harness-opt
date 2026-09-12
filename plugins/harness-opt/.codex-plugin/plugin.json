@@ -1,0 +1,21 @@
+{
+  "name": "harness-opt",
+  "version": "0.1.0",
+  "description": "Evaluate and optimize skills with native Claude Code and Codex runners.",
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Harness Opt",
+    "shortDescription": "Measure skill quality, cost, and time",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ]
+  },
+  "author": {
+    "name": "harness-opt contributors"
+  },
+  "repository": "https://github.com/Oct7/harness-opt",
+  "homepage": "https://github.com/Oct7/harness-opt#readme"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "harness-opt",
+  "owner": {
+    "name": "harness-opt contributors"
+  },
+  "plugins": [
+    {
+      "name": "harness-opt",
+      "source": "./plugins/harness-opt",
+      "description": "Evaluate and optimize skills with native Claude Code and Codex runners."
+    }
+  ],
+  "description": "Native coding-agent skill evaluation and optimization"
+}

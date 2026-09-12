@@ -1,0 +1,34 @@
+[
+  {
+    "id": "progressive-disclosure",
+    "source": "https://github.com/anthropics/skills/blob/34040c9c568585f6929bedeaad110ad08f079624/README.md",
+    "commit": "34040c9c568585f6929bedeaad110ad08f079624",
+    "license": "Per-file licensing; no source copied",
+    "applies_when": "Long instructions include specialized branches rarely needed",
+    "instruction": "Move optional detailed guidance to references and retain explicit conditional links from SKILL.md; preserve every requirement."
+  },
+  {
+    "id": "script-repeatable-work",
+    "source": "https://github.com/openai/skills/blob/49f948faa9258a0c61caceaf225e179651397431/README.md",
+    "commit": "49f948faa9258a0c61caceaf225e179651397431",
+    "license": "Per-skill LICENSE.txt; no source copied",
+    "applies_when": "The same deterministic operation is repeatedly reconstructed",
+    "instruction": "Move deterministic repeated operations into a small executable script; preserve input checks and error handling. This reference repository is deprecated; use only the pinned pattern, not its installation instructions."
+  },
+  {
+    "id": "single-source-instructions",
+    "source": "https://github.com/obra/superpowers/blob/b36e0829c6d0140e93cfef2ca599b1b07d4a7797/README.md",
+    "commit": "b36e0829c6d0140e93cfef2ca599b1b07d4a7797",
+    "license": "MIT; no source copied",
+    "applies_when": "Identical requirements appear in multiple entry points",
+    "instruction": "Consolidate duplicate instructions into one referenced document without removing checks, permissions, or required outputs."
+  },
+  {
+    "id": "reusable-tool-command",
+    "source": "https://github.com/garrytan/gstack/blob/71f6048e8ada25180e61438abc1d98cb151fe9a7/README.md",
+    "commit": "71f6048e8ada25180e61438abc1d98cb151fe9a7",
+    "license": "MIT; no source copied",
+    "applies_when": "Repeated tool setup or deterministic validation dominates execution",
+    "instruction": "Reuse one existing command or script for repeated setup and validation; preserve the native execution harness and all mandatory verification."
+  }
+]
