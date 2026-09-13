@@ -1,6 +1,7 @@
 """Opt-in offline native CLI -> metered gateway -> loopback provider smoke.
 
 Run: PYTHONPATH=plugins/harness-opt .venv/bin/python tests/native_smoke.py
+Checks explicit API gateway and current native configuration paths.
 No production credentials or native user settings are loaded.
 """
 import json
@@ -143,6 +144,38 @@ def main():
                         if tool_phase:
                             assert (work / 'smoke.txt').read_text() == 'OFFLINE_TOOL_OK', result
                             assert len(gateway.records) >= 2, gateway.records
+                    # Existing native provider configuration: no harness gateway or HARNESS key.
+                    if runner == 'claude':
+                        os.environ.update(ANTHROPIC_BASE_URL=f'http://127.0.0.1:{server.server_port}',
+                                          ANTHROPIC_API_KEY='offline-provider-key', ANTHROPIC_MODEL=model_id,
+                                          CLAUDE_CODE_EFFORT_LEVEL='high')
+                    else:
+                        config_path = home / '.codex/config.toml'
+                        config_path.write_text('model="' + model_id + '"\nmodel_reasoning_effort="high"\nmodel_provider="offline"\n' + config_path.read_text() +
+                                               '\n[model_providers.offline]\nname="Offline native fixture"\nbase_url="http://127.0.0.1:' + str(server.server_port) +
+                                               '/v1"\nwire_api="responses"\nenv_key="OPENAI_API_KEY"\n')
+                        os.environ['OPENAI_API_KEY'] = 'offline-provider-key'
+                    profile = capture_profile(runner, source, current=True)
+                    for scenario in ('text', 'file-tool'):
+                        tool_phase, tool_sent = scenario == 'file-tool', False
+                        work = root / (runner + '-current-' + scenario)
+                        work.mkdir()
+                        active_work = work
+                        previous_requests = len(captured)
+                        assert not any(name.startswith('HARNESS_') for name in os.environ)
+                        result = execute(profile, work, ('Create smoke.txt containing OFFLINE_TOOL_OK, then say OFFLINE_SMOKE_OK.' if tool_phase else 'Say OFFLINE_SMOKE_OK.'), None, 25)
+                        assert result['status'] == 'completed', result
+                        assert 'OFFLINE_SMOKE_OK' in result['output'], result
+                        assert result['usage_source'] == 'native_runner', result
+                        expected_input, expected_output = (40, 14) if tool_phase else (20, 4)
+                        assert result['usage']['input_tokens'] == expected_input, result
+                        assert result['usage']['output_tokens'] == expected_output, result
+                        assert len(captured) - previous_requests == (2 if tool_phase else 1), captured
+                        if tool_phase:
+                            assert (work / 'smoke.txt').read_text() == 'OFFLINE_TOOL_OK', result
+                        print(json.dumps({'runner': runner, 'execution': 'current', 'scenario': scenario,
+                                          'status': result['status'], 'usage_source': result['usage_source'],
+                                          'input_tokens': result['usage']['input_tokens'], 'output_tokens': result['usage']['output_tokens']}))
             print(json.dumps({'provider_request_count': len(captured), 'protocols': sorted({request['path'] for request in captured})}))
     finally:
         server.shutdown()

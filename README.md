@@ -1,7 +1,8 @@
 # harness-opt
 
-Run skills and plugins through native Claude Code or Codex, measure quality,
-completion time and cost, and retain only improvements verified on generated cases.
+Improve skills and plugins using your existing Claude Code or Codex login and model,
+or opt into separate API experiments to compare model cost and completion time.
+Retain only improvements verified on generated cases.
 The original target and user settings are never intentionally overwritten.
 
 **Development preview.** Offline checks and native plugin installation are tested;
@@ -39,17 +40,47 @@ codex plugin add harness-opt@harness-opt
 
 Public GitHub marketplace: use `Oct7/harness-opt` in place of the local path in
 either command. Repository: https://github.com/Oct7/harness-opt.
-Invoke the `harness-opt` skill in either tool; it uses the calling native runner
-and guides provider/key setup, target or demo selection, baseline model/effort,
-mode, final repetitions, budget and time limit before execution. Previously
-specified choices are reused for that run; three repetitions are recommended.
+Invoke the `harness-opt` skill in either tool. It first offers current environment
+improvement (recommended) or API model comparison, then guides target/demo, mode,
+repetitions and limits. Provider/key setup appears only for API comparison.
+Previously supplied choices are reused for that run; three repetitions are recommended.
 See the official [Claude plugin reference](https://code.claude.com/docs/en/plugins-reference)
 and [Codex plugins documentation](https://developers.openai.com/codex/plugins).
 
-## Configure providers
+## Improve the current environment
 
-The skill guides this setup when a user wants to run an evaluation. A real target
-or API key is not required just to install, inspect, or develop harness-opt.
+The default uses your existing native authentication, model and effort. It runs
+fresh native CLI processes in isolated workspace/configuration copies; it does not
+change the active conversation's API connection. No new API key or HARNESS provider
+configuration is needed.
+
+```sh
+harness_demo_dir=$(mktemp -d)
+cp -R ./plugins/harness-opt/examples/file-skill "$harness_demo_dir/skill"
+harness-opt optimize "$harness_demo_dir/skill" --runner codex --execution current \
+  --mode all --workspace "$harness_demo_dir" --repeats 3 --time-limit 600
+harness-opt report RUN_ID
+harness-opt run /path/to/profile-1.json 'Summarize input.txt' \
+  --workspace /path/to/project --time-limit 120
+```
+
+`all` evaluates steps and structure while keeping the model/effort fixed. Quality
+must pass; time or reported tokens must decrease without worsening the other known
+metric. Dollars stay `unknown`, even if a native CLI supplies a cost estimate.
+Existing account charges and quotas apply; this path cannot enforce a dollar cap.
+Use API comparison when you need a metered USD limit or model/effort comparisons.
+
+Native credential files and environment are preserved in copied configuration.
+Keychain-only login can be unavailable under isolated HOME/config paths, producing
+an unverified authentication failure. Actual subscription/keychain login is not yet
+verified. Session-only model/effort overrides need explicit reproduction with
+`--baseline-model` / `--effort`; otherwise native disk settings/defaults are used.
+
+## API model comparison
+
+Choose `--execution api` to select providers/models for separate evaluation processes.
+The skill guides this setup only when selected; the parent conversation keeps its
+connection. A real target or key is unnecessary for installation or development.
 
 Prepare a provider entry without making API calls:
 
@@ -64,9 +95,9 @@ harness-opt configure openrouter --env-file /path/to/project/.env --prompt-key
 Without a key, `configure` writes a template and returns `needs_api_key`. It preserves
 unrelated settings and existing keys, writes with mode 0600, and never prints keys.
 `configured` only means the fields were stored; no authentication/model call was made.
-Ollama has a local URL preset; custom providers use `--base-url`. Baseline model,
-effort, mode, repetitions, dollar budget and seconds are chosen in the skill before
-execution; dollar/time limits are never silently filled in.
+Ollama has a local URL preset; custom providers use `--base-url`. The skill collects
+the baseline, mode, repetitions, dollar budget and seconds before API execution;
+dollar/time limits are never silently filled in.
 
 Store credentials in a local `.env` (gitignored), or set environment variables.
 Each provider is independent:
@@ -89,7 +120,7 @@ harness-opt models --openrouter  # public price catalog; no API key or paid requ
 harness-opt models --env-file .env
 harness_demo_dir=$(mktemp -d)
 cp -R ./plugins/harness-opt/examples/file-skill "$harness_demo_dir/skill"
-harness-opt optimize "$harness_demo_dir/skill" --runner codex --mode all \
+harness-opt optimize "$harness_demo_dir/skill" --runner codex --execution api --mode all \
   --workspace "$harness_demo_dir" --baseline-provider local --baseline-model your-model-id \
   --effort medium --repeats 3 --budget-usd 2 --time-limit 600
 harness-opt report RUN_ID
@@ -97,22 +128,28 @@ harness-opt run /path/to/profile-1.json 'Summarize input.txt' \
   --workspace /path/to/project --budget-usd 1 --time-limit 120
 ```
 
-Dollar budgets and time limits (seconds) are required, with no paid defaults.
+Time limits (seconds) are required for both paths. USD limits are required only for
+API execution and are refused for current execution, which cannot enforce them.
+Example limits above are illustrative; the skill always asks for missing choices.
 State defaults to `~/.cache/harness-opt`, outside the experiment workspace; override
 with `--state-dir`. A state directory inside the workspace is rejected to avoid
 recursive snapshots. `--force` bypasses cached cases and quality failures;
-`--resume RUN_ID` resumes compatible saved work. `--budget-usd` is the cumulative
-ceiling including earlier invocations; `--time-limit` starts a new wall-clock window.
+`--resume RUN_ID` resumes compatible saved work. For API runs, `--budget-usd` is the
+cumulative ceiling including earlier invocations; `--time-limit` starts a new window.
+Replay profiles retain their execution path. Profiles from before 0.2.0 default to
+API replay; existing optimization scripts must now add `--execution api` explicitly.
 
 ## Evaluation and outputs
 
-Modes: `steps`, `speed`, `cost`, `structure`, or `all` (default). Original requirements
+Current modes: `steps`, `structure`, or `all` (default). API execution also supports
+`speed` and `cost`; its `all` covers all four modes. Original requirements
 are frozen before proposals. Direct artifact checks precede blinded baseline-model
 judgment. Finalists receive reversed-order judgment and `--repeats` executions per
 case (default/recommended: 3). One or two repetitions are allowed for quick trials
 and yield provisional candidates only, without verified replay profiles.
-Promotion requires quality plus lower measured cost **and** shorter completion time.
-A cheaper token price alone does not qualify. No improvement is a valid outcome.
+API promotion requires quality plus lower measured cost **and** shorter completion
+time. Current promotion compares time/reported tokens as described above. A cheaper
+token price alone does not qualify. No improvement is a valid outcome.
 
 Before baseline execution, each run saves `cases.json` with frozen criteria, fixtures
 and the exploration/held-out split. The report links it and records whether cases
@@ -123,7 +160,7 @@ validated—an improved copy, unified diff, and replay profile. Unknown costs an
 unverified work remain explicit. Aliased-model quality failures expire after seven
 days; authentication/transport problems never become cached quality failures.
 
-The loopback gateway preserves same-format native requests using HTTP passthrough,
+For API experiments, the loopback gateway preserves same-format native requests using HTTP passthrough,
 and uses LiteLLM's [Messages](https://docs.litellm.ai/docs/anthropic_unified)
 and [Responses](https://docs.litellm.ai/docs/response_api) adapters for protocol conversion. It reserves cost
 before dispatch and stops when usage cannot be reconciled. Input/output usage,
@@ -148,8 +185,10 @@ CI covers Python 3.11 and 3.13 on Linux and macOS. Local validation uses Claude 
 2.1.263, Codex CLI 0.154.0 and LiteLLM 1.100.1. Both marketplaces were installed
 successfully using temporary HOME/config directories, without changing user settings.
 Both actual CLIs also completed text and file-tool round trips against loopback
-providers (four smoke scenarios), with measured usage and streaming timing.
-The default unit/integration suite contains 48 checks; it does not require paid APIs.
+providers in both execution paths (eight scenarios, twelve provider requests).
+The 59-test unit/integration suite requires no paid APIs. Native-reported token
+totals and gateway usage/stream timing are checked separately; these fake-provider
+runs do not establish real subscription authentication or paid-provider compatibility.
 
 Before a stable release, supply a provider and explicit paid budget, verify real file
 work, hooks and subagents end to end in both runners, then promote the development preview to a stable release. Baseline capture covers explicit model/effort and native files on disk; session-only

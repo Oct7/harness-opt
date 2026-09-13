@@ -1,6 +1,7 @@
 """Sequential native-runner experiments, with conservative promotion gates."""
 import difflib
 import json
+import math
 import os
 import shutil
 import time
@@ -24,14 +25,23 @@ def _atomic_text(path,content):
 def _write_report(directory, report):
     directory.mkdir(parents=True,exist_ok=True)
     _atomic_text(directory/'report.json',json.dumps(report,indent=2,ensure_ascii=False,default=str))
+    cost=report.get('evaluation_cost_usd')
     lines=[f'# harness-opt {report["id"]}', '', f'Status: {report["status"]}',
+           f'Execution: {report.get("execution", "api")}',
            f'Mode: {report.get("mode", "unknown")}; confirmation repeats per case: {report.get("confirmation_repeats", "unknown")}',
-           f'Evaluation cost (USD): {report.get("evaluation_cost_usd", "unknown")}', '',
+           f'Evaluation cost (USD): {cost if cost is not None else "unknown"}', '',
            'Recommendations are verified only for the recorded environment and generated cases.', '']
+    if report.get('execution') == 'current':
+        lines += ['Billing: existing native account; dollar cost unknown and no dollar ceiling enforced.',
+                  'Recommendations compare completion time and reported tokens; no dollar savings are claimed.', '']
     if report.get('cases_file'):
         lines += ['Frozen cases and held-out split: [cases.json](cases.json)', '']
     for trial in report.get('trials',[]):
-        lines.append(f'- {trial["name"]}: {trial["status"]}; cost={trial.get("mean_cost_usd", "unknown")}; duration={trial.get("mean_duration", "unknown")}')
+        cost,duration,tokens=[value if value is not None else 'unknown' for value in
+                              (trial.get('mean_cost_usd'),trial.get('mean_duration'),trial.get('mean_total_tokens'))]
+        lines.append(f'- {trial["name"]}: {trial["status"]}; cost={cost}; duration={duration}; reported tokens={tokens}')
+    for recommendation in report.get('recommendations',[]):
+        lines.append(f'- Recommended: {recommendation["name"]}; improved: {", ".join(recommendation.get("improvements", []))}; [replay profile]({Path(recommendation["profile"]).name})')
     lines += ['', '## Reasons']+[f'- {x}' for x in report.get('reasons',[])]
     _atomic_text(directory/'report.md','\n'.join(lines)+'\n')
 
@@ -107,6 +117,24 @@ def _hashes(workspace):
             for p in Path(workspace).rglob('*') if p.is_file() and not p.is_symlink()}
 
 
+def _usage_totals(results):
+    totals={}
+    for key in ('input_tokens','output_tokens'):
+        counts=[result['usage'].get(key) if isinstance(result.get('usage'),dict) else None for result in results]
+        totals[key]=sum(counts) if counts and all(type(v) in (int,float) and math.isfinite(v) and v>=0 for v in counts) else None
+    totals['total_tokens']=sum(totals.values()) if all(v is not None for v in totals.values()) else None
+    return totals
+
+
+def _validate_execution(execution, budget_usd):
+    if execution not in ('current','api'):
+        raise ValueError('Execution must be current or api')
+    if execution == 'api' and budget_usd is None:
+        raise ValueError('--execution api requires --budget-usd')
+    if execution == 'current' and budget_usd is not None:
+        raise ValueError('Dollar ceilings require --execution api; current execution uses the native account')
+
+
 def _evidence(result, workspace, before, secrets):
     from .runner import _redact
     files={}
@@ -128,7 +156,10 @@ def _evidence(result, workspace, before, secrets):
 
 def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
              baseline_model=None, baseline_provider=None, effort=None, cases=4,
-             force=False, resume=None, workspace=None, repeats=3):
+             force=False, resume=None, workspace=None, repeats=3, execution='current'):
+    _validate_execution(execution,budget_usd)
+    if execution == 'current' and (mode in ('speed','cost') or baseline_provider):
+        raise ValueError('Model/provider comparisons require --execution api; current execution supports steps, structure or all')
     if mode not in {'all','steps','speed','cost','structure'}:
         raise ValueError('Unknown optimization mode')
     if cases < 4:
@@ -158,32 +189,34 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
     previous_spend=0.0
     report={'id':run_id,'status':'no_verified_improvement','trials':[],'reasons':[],
             'recommendations':[],'provisional_candidates':[], 'mode':mode,
-            'confirmation_repeats':repeats,'scope':'recorded environment and generated cases only'}
-    profile=capture_profile(runner,workspace,model=baseline_model,effort=effort)
+            'confirmation_repeats':repeats,'execution':execution,'cost_savings_verified':False,
+            'scope':'recorded environment and generated cases only'}
+    profile=capture_profile(runner,workspace,model=baseline_model,effort=effort, current=execution=='current')
     if profile.get('requires_external_fixture') and not profile.get('external_isolation_verified'):
         raise ValueError('Native hooks/MCP require an independently isolated external fixture before optimization')
     effort=profile.get('effort')
-    providers=load_providers(env_file)
-    if baseline_provider is None and len(providers)==1:
-        baseline_provider=next(iter(providers))
-    if baseline_provider not in providers:
-        raise ValueError('Specify a configured baseline provider')
-    models=[]
-    for provider in providers.values():
-        models.extend(discover_models(provider))
-    model_id=baseline_model or profile.get('model')
-    baseline=next((m for m in models if m['id']==model_id and m['provider']==baseline_provider),None)
-    if baseline is None:
-        raise ValueError('Baseline model must match the captured native configuration and a discovered model')
-    if not model_id:
-        raise ValueError('Cannot establish the current model; provide --baseline-model')
+    providers,models={},[]
+    if execution == 'api':
+        providers=load_providers(env_file)
+        if baseline_provider is None and len(providers)==1:
+            baseline_provider=next(iter(providers))
+        if baseline_provider not in providers:
+            raise ValueError('Specify a configured baseline provider')
+        for provider in providers.values():
+            models.extend(discover_models(provider))
+        model_id=baseline_model or profile.get('model')
+        baseline=next((m for m in models if m['id']==model_id and m['provider']==baseline_provider),None)
+        if baseline is None:
+            raise ValueError('Baseline model must match the captured native configuration and a discovered model')
+    else:
+        baseline={'id':profile.get('model') or 'native-default','provider':'native','efforts':[effort]}
     snapshot=WorkspaceSnapshot(workspace,directory/('snapshot-'+uuid.uuid4().hex[:8]))
     skill_files=public_skill_files(target)
     if not skill_files:
         raise ValueError('Target has no public SKILL.md entrypoints')
     relative=target.relative_to(workspace)
     original={str(p.relative_to(workspace)):p.read_text() for p in skill_files}
-    identity=fingerprint({'workspace':snapshot.fingerprint,'profile':profile,'skills':original,'cases':cases,'baseline':_stable_model(baseline)})
+    identity=fingerprint({'execution':execution,'workspace':snapshot.fingerprint,'profile':profile,'skills':original,'cases':cases,'baseline':_stable_model(baseline)})
     previous=store.get('run',run_id)
     if previous and previous.get('identity')!=identity:
         raise ValueError('Resume configuration differs from original run')
@@ -201,28 +234,38 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
     store.put('run',run_id,report)
 
     def call(prompt,model,work,selected_effort=effort,target_path=None,entrypoint=None):
-        if not budget.time_left or not budget.remaining:
+        if not budget.time_left or execution == 'api' and not budget.remaining:
             raise BudgetExceeded('Budget or time limit reached')
-        with Gateway(providers[model['provider']],model,budget,effort=selected_effort) as gateway:
-            active=dict(profile,model=model['id'],effort=selected_effort,gateway_api_key=gateway.api_key,entrypoint=entrypoint,evaluation_only=target_path is None)
-            result=execute(active,work,prompt,gateway.base_url,budget.time_left,target=target_path)
+        if execution == 'current':
+            active=dict(profile,entrypoint=entrypoint,evaluation_only=target_path is None)
+            result=execute(active,work,prompt,None,budget.time_left,target=target_path)
+            result.update(cost_usd=None,calls=[],compatibility_errors=[])
+        else:
+            with Gateway(providers[model['provider']],model,budget,effort=selected_effort) as gateway:
+                active=dict(profile,model=model['id'],effort=selected_effort,gateway_api_key=gateway.api_key,entrypoint=entrypoint,evaluation_only=target_path is None)
+                result=execute(active,work,prompt,gateway.base_url,budget.time_left,target=target_path)
+            result.update(cost_usd=gateway.cost,calls=gateway.records,compatibility_errors=gateway.compatibility_errors)
+            if gateway.compatibility_errors:
+                result['status']='compatibility_failure'
+            if not gateway.records:
+                result['status']='unverified'
+                result['reason']='No metered model calls; native gateway routing was not verified'
         result=_redact_value(result,[p.api_key for p in providers.values()])
-        result.update(cost_usd=gateway.cost,calls=gateway.records,compatibility_errors=gateway.compatibility_errors)
-        if gateway.compatibility_errors:
-            result['status']='compatibility_failure'
-        if not gateway.records:
-            result['status']='unverified'
-            result['reason']='No metered model calls; native gateway routing was not verified'
-        errors={r.get('error') for r in gateway.records if r.get('error')}
+        errors={r.get('error') for r in result['calls'] if r.get('error')}
         if errors:
             result['status']=next((category+'_failure' for category in ('compatibility','authentication','transport','budget') if category in errors),'unverified')
+        if result.get('authentication_guidance'):
+            result['reason']=result['authentication_guidance']
         report.setdefault('calls',[]).append({'model':model['id'],'result':result})
-        report['evaluation_cost_usd']=None if budget.uncertain else budget.spent
-        report['budget_accounted_usd']=budget.spent
+        report['evaluation_cost_usd']=None if execution=='current' or budget.uncertain else budget.spent
+        report['budget_accounted_usd']=budget.spent if execution=='api' else None
+        report['invocation_usage']=_usage_totals([call['result'] for call in report['calls']])
         store.put('run',run_id,report)
         _write_report(directory,report)
         if 'budget' in errors:
             raise BudgetExceeded('Gateway could not reserve the next call within the configured budget')
+        if result.get('status') == 'timeout':
+            raise TimeoutError('Native execution exhausted the time limit')
         return result
 
     def judge(case,base,candidate,swapped):
@@ -262,9 +305,11 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
                 if _success(result) and not errors:
                     judges=[judge(case,baselines[case['id']]['evidence'],evidence,False),judge(case,baselines[case['id']]['evidence'],evidence,True)]
                 record['runs'].append({'case':case['id'],'repeat':repeat,'result':result,'checks':errors,'judges':judges})
-                if errors or any(j['verdict']=='below' for j in judges):
+                if not _success(result):
+                    record['status']='unverified'
+                elif errors or any(j['verdict']=='below' for j in judges):
                     record['status']='quality_failure'
-                elif not _success(result) or not judges or any(j['verdict']=='indeterminate' for j in judges):
+                elif not judges or any(j['verdict']=='indeterminate' for j in judges):
                     record['status']='unverified'
                 if record['status']!='passed':
                     break
@@ -274,11 +319,13 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
         record['mean_duration']=sum(r['result'].get('duration',0) for r in runs)/len(runs) if runs else None
         costs=[r['result']['cost_usd'] for r in runs]
         record['mean_cost_usd']=sum(costs)/len(costs) if costs and all(c is not None for c in costs) else None
+        totals=_usage_totals([r['result'] for r in runs])
+        record['mean_total_tokens']=totals['total_tokens']/len(runs) if totals['total_tokens'] is not None else None
         if record['status']=='quality_failure':
             store.put('failure',key,record)
         record['in_progress']=False
-        report['evaluation_cost_usd']=None if budget.uncertain else budget.spent
-        report['budget_accounted_usd']=budget.spent
+        report['evaluation_cost_usd']=None if execution=='current' or budget.uncertain else budget.spent
+        report['budget_accounted_usd']=budget.spent if execution=='api' else None
         _write_report(directory,report)
         return record
 
@@ -298,7 +345,7 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
                         'Use fully local reproducible tasks. Do not execute the skill.\n'+json.dumps({entry:source}))
                 generated=call(prompt,baseline,work)
                 if not _success(generated):
-                    raise ValueError('Case generation did not complete with verified metering')
+                    raise ValueError('Case generation did not complete: '+generated['status']+'; '+generated.get('reason',''))
                 entry_cases=validate_cases(json_output(_native_text(generated['output'])),cases)
                 for case in entry_cases:
                     case['entrypoint']=entry
@@ -328,7 +375,8 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
                 baselines[case['id']]={'result':result,'evidence':_evidence(result,work,before,[p.api_key for p in providers.values()])}
             else:
                 report.setdefault('baseline_failures',[]).append({'case':case['id'],'result':result,'checks':errors})
-                report['reasons'].append(f'Baseline {case["id"]} failed: {errors or result["status"]}')
+                reason=result.get('reason',result['status']) if not _success(result) else errors
+                report['reasons'].append(f'Baseline {case["id"]} failed: {reason}')
         report['baseline_runs']={k:{'result':v['result']} for k,v in baselines.items()}
         explore=[c for c in case_set if c['split']=='exploration']
         passing=[]
@@ -367,7 +415,7 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
                 record=trial(kind,baseline,changes,effort,explore)
                 if record['status']=='passed':
                     passing.append(record)
-        if mode in {'all','speed','cost'}:
+        if execution == 'api' and mode in {'all','speed','cost'}:
             for model in sorted(models,key=lambda m:m.get('input_per_million') if m.get('input_per_million') is not None else float('inf')):
                 if any(model.get(k) is None for k in ('input_per_million','output_per_million','context_window')):
                     continue
@@ -409,9 +457,25 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
             base_costs=[b['result']['cost_usd'] for b in baselines.values()]
             base_cost=sum(base_costs)/len(base_costs) if all(c is not None for c in base_costs) else None
             base_time=sum(b['result']['duration'] for b in baselines.values())/len(baselines)
+            base_usage=_usage_totals([b['result'] for b in baselines.values()])
+            base_tokens=base_usage['total_tokens']/len(baselines) if base_usage['total_tokens'] is not None else None
+            report['baseline_metrics']={'mean_duration':base_time,'mean_cost_usd':base_cost,'mean_total_tokens':base_tokens}
             for candidate in finalists:
                 final=trial('confirm:'+candidate['name'],candidate['model'],candidate['changes'],candidate['effort'],case_set,repeats)
-                if final['status']=='passed' and base_cost is not None and final['mean_cost_usd'] is not None and final['mean_cost_usd']<base_cost and final['mean_duration']<base_time:
+                improvements=[]
+                elapsed=final['mean_duration']
+                if elapsed is not None and elapsed < base_time:
+                    improvements.append('completion_time')
+                tokens_known=base_tokens is not None and final['mean_total_tokens'] is not None
+                if tokens_known and final['mean_total_tokens'] < base_tokens:
+                    improvements.append('reported_tokens')
+                if execution == 'api':
+                    better=base_cost is not None and final['mean_cost_usd'] is not None and final['mean_cost_usd']<base_cost and 'completion_time' in improvements
+                    if better:
+                        improvements.append('cost')
+                else:
+                    better=bool(improvements) and elapsed is not None and elapsed<=base_time and (not tokens_known or final['mean_total_tokens']<=base_tokens)
+                if final['status']=='passed' and better:
                     if repeats < 3:
                         final['provisional']=True
                         report['provisional_candidates'].append({'name':final['name'],'cost_usd':final['mean_cost_usd'],
@@ -425,12 +489,14 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
                         (copy/p).write_text(content)
                         diff.extend(difflib.unified_diff(((workspace/p).read_text() if (workspace/p).exists() else '').splitlines(True),content.splitlines(True),fromfile=p,tofile=p))
                     (directory/f'approved-{index}.diff').write_text(''.join(diff))
-                    replay={'runner_profile':dict(profile,model=final['model']['id'],effort=final['effort']), 'provider':final['model']['provider'],'model':final['model'],'workspace':str(copy),'target':str(copy/relative),'verified_scope':report['scope'],'confirmation_repeats':repeats,'approved_hash':WorkspaceSnapshot(copy,directory/('integrity-'+uuid.uuid4().hex[:8])).fingerprint}
+                    replay_profile=dict(profile,model=final['model']['id'],effort=final['effort']) if execution=='api' else dict(profile)
+                    replay={'execution':execution,'runner_profile':replay_profile, 'provider':final['model']['provider'],'model':final['model'],'workspace':str(copy),'target':str(copy/relative),'verified_scope':report['scope'],'confirmation_repeats':repeats,'approved_hash':WorkspaceSnapshot(copy,directory/('integrity-'+uuid.uuid4().hex[:8])).fingerprint}
                     replay_path=directory/f'profile-{index}.json'
                     replay_path.write_text(json.dumps(replay,indent=2))
-                    report['recommendations'].append({'name':final['name'],'profile':str(replay_path),'cost_usd':final['mean_cost_usd'],'duration':final['mean_duration']})
+                    report['recommendations'].append({'name':final['name'],'profile':str(replay_path),'cost_usd':final['mean_cost_usd'],'duration':final['mean_duration'],'improvements':improvements})
             if report['recommendations']:
                 report['status']='verified_improvement'
+                report['cost_savings_verified']=execution=='api'
             elif report['provisional_candidates']:
                 report['status']='provisional_improvement'
                 report['reasons'].append('Fewer than three confirmation runs were requested; improvements remain provisional')
@@ -446,11 +512,12 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
         for trial_record in report['trials']:
             if trial_record.get('in_progress'):
                 trial_record.update(status='incomplete',provisional=True)
-        report['evaluation_cost_usd']=None if budget.uncertain else budget.spent
-        report['budget_accounted_usd']=budget.spent
-        report['invocation_cost_usd']=budget.spent-previous_spend
+        report['evaluation_cost_usd']=None if execution=='current' or budget.uncertain else budget.spent
+        report['budget_accounted_usd']=budget.spent if execution=='api' else None
+        report['invocation_cost_usd']=budget.spent-previous_spend if execution=='api' else None
         report['invocation_duration']=time.monotonic()-started
-        report['budget_semantics']='budget-usd is cumulative across resumes; time-limit applies to each invocation'
+        report['budget_semantics']=('budget-usd is cumulative across resumes; time-limit applies to each invocation' if execution=='api' else 'time-limit applies to each invocation; native account billing applies and no dollar ceiling is enforced')
+        report['cost_status']='unknown' if execution=='current' or budget.uncertain else 'metered'
         report['budget_uncertain']=budget.uncertain
         report['budget_remaining_usd']=budget.remaining
         report=_redact_value(report,[p.api_key for p in providers.values()])
@@ -463,16 +530,20 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
 def run_profile(profile_path, task, budget_usd, time_limit, env_file=None, workspace=None):
     import tempfile
     data=json.loads(Path(profile_path).read_text())
-    providers=load_providers(env_file)
+    execution=data.get('execution','api')
+    _validate_execution(execution,budget_usd)
     budget=Budget(budget_usd,time_limit)
-    if data['provider'] not in providers:
-        raise ValueError('Profile provider is not configured')
-    available=discover_models(providers[data['provider']])
-    selected=next((m for m in available if m['id']==data['model']['id']),None)
-    if selected is None:
-        raise ValueError('Profile model is not available from the configured provider')
-    if data['model'].get('model_version') and data['model'].get('model_version')!=selected.get('model_version'):
-        raise ValueError('Model version changed; re-optimize before running')
+    providers={}
+    if execution == 'api':
+        providers=load_providers(env_file)
+        if data['provider'] not in providers:
+            raise ValueError('Profile provider is not configured')
+        available=discover_models(providers[data['provider']])
+        selected=next((m for m in available if m['id']==data['model']['id']),None)
+        if selected is None:
+            raise ValueError('Profile model is not available from the configured provider')
+        if data['model'].get('model_version') and data['model'].get('model_version')!=selected.get('model_version'):
+            raise ValueError('Model version changed; re-optimize before running')
     approved=Path(data['workspace'])
     source=Path(workspace or Path.cwd()).resolve()
     if not source.is_dir():
@@ -494,10 +565,17 @@ def run_profile(profile_path, task, budget_usd, time_limit, env_file=None, works
             target=target.parent/'skill'/approved_target.name
         else:
             shutil.copytree(approved_target,target)
-        with Gateway(providers[data['provider']],selected,budget,effort=data['runner_profile'].get('effort')) as gateway:
-            active=dict(data['runner_profile'],gateway_api_key=gateway.api_key)
-            result=execute(active,work,task,gateway.base_url,budget.time_left,target=target)
-        result.update(cost_usd=gateway.cost,compatibility_errors=gateway.compatibility_errors,workspace=str(work))
-        if gateway.compatibility_errors or not gateway.records:
-            result['status']='unverified'
+        if not budget.time_left:
+            raise TimeoutError('Workspace preparation exhausted the time limit')
+        if execution == 'current':
+            result=execute(data['runner_profile'],work,task,None,budget.time_left,target=target)
+            result.update(cost_usd=None,compatibility_errors=[],cost_status='unknown')
+        else:
+            with Gateway(providers[data['provider']],selected,budget,effort=data['runner_profile'].get('effort')) as gateway:
+                active=dict(data['runner_profile'],gateway_api_key=gateway.api_key)
+                result=execute(active,work,task,gateway.base_url,budget.time_left,target=target)
+            result.update(cost_usd=gateway.cost,compatibility_errors=gateway.compatibility_errors)
+            if gateway.compatibility_errors or not gateway.records:
+                result['status']='unverified'
+        result.update(workspace=str(work),execution=execution)
         return _redact_value(result,[p.api_key for p in providers.values()])

@@ -22,6 +22,12 @@ harness; they do not need to install all of them. A direct model API test can as
 response quality/cost, but cannot establish native skill/tool/hook/MCP equivalence.
 No standalone direct-API evaluation mode is implemented.
 
+The default `current` execution uses the existing native login/model for steps and
+structure improvements. Optional `api` execution selects providers/models only for
+separate native evaluation processes through a temporary gateway. A skill cannot
+change its active host conversation's connection. API setup is therefore optional,
+and model-comparison support still depends on a native adapter for the user's harness.
+
 Bundled runtime code, skill instructions and static patterns remain inside the
 plugin. Generated cases and reports are private run state, kept outside the target
 workspace so snapshots never recursively include their own output.

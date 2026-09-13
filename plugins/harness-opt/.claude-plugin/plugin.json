@@ -1,6 +1,6 @@
 {
   "name": "harness-opt",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Evaluate and optimize skills with native Claude Code and Codex runners.",
   "license": "MIT",
   "author": {

@@ -14,7 +14,7 @@ from unittest.mock import patch
 from harness_opt.optimizer import optimize, run_profile
 
 class WorkflowTests(unittest.TestCase):
-    def experiment(self, cheap_cost=0.01, missing=False, mode="cost", combined_failure=False, resume_budget=False, repeats=3, nested_example=False):
+    def experiment(self, cheap_cost=0.01, missing=False, mode="cost", combined_failure=False, resume_budget=False, repeats=3, nested_example=False, legacy_profile=False):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); work=root/'source';work.mkdir();(work/'SKILL.md').write_text('Write answer.txt with correct result')
             if nested_example:
@@ -52,7 +52,7 @@ class WorkflowTests(unittest.TestCase):
                 return {'status':'completed','output':output,'duration':2 if profile['model']=='base' else 1,'artifacts':{}}
             profile={'runner':'codex','model':'base','effort':'low','version':'test','workspace':str(work)}
             with patch('harness_opt.optimizer.capture_profile',return_value=profile),patch('harness_opt.optimizer.load_providers',return_value={'fake':provider}),patch('harness_opt.optimizer.discover_models',return_value=models),patch('harness_opt.optimizer.Gateway',FakeGateway),patch('harness_opt.optimizer.execute',side_effect=fake_execute):
-                result=optimize(work,'codex',mode,0.065 if resume_budget else 10,60,root/'state',None,repeats=repeats)
+                result=optimize(work,'codex',mode,0.065 if resume_budget else 10,60,root/'state',None,repeats=repeats,execution='api')
                 case_file=Path(result['cases_file'])
                 frozen=json.loads(case_file.read_text())['cases']
                 self.assertEqual(frozen,result['cases'])
@@ -61,12 +61,12 @@ class WorkflowTests(unittest.TestCase):
                 if resume_budget:
                     self.assertEqual(result['status'],'budget_stopped')
                     prior=result['evaluation_cost_usd']
-                    result=optimize(work,'codex',mode,10,60,root/'state',None,resume=result['id'])
+                    result=optimize(work,'codex',mode,10,60,root/'state',None,resume=result['id'],execution='api')
                     self.assertGreater(result['evaluation_cost_usd'],prior)
                     self.assertAlmostEqual(result['evaluation_cost_usd']-result['invocation_cost_usd'],prior)
                 if missing:
                     self.assertEqual(result['trials'][0]['status'],'quality_failure')
-                    repeated=optimize(work,'codex','cost',10,60,root/'state',None)
+                    repeated=optimize(work,'codex','cost',10,60,root/'state',None,execution='api')
                     self.assertTrue(repeated['trials'][0]['reused'])
                     return
                 if cheap_cost>=0.02:
@@ -92,14 +92,23 @@ class WorkflowTests(unittest.TestCase):
                 task_source=root/'new-task'
                 task_source.mkdir()
                 (task_source/'input.txt').write_text('new task input')
-                replay=run_profile(result['recommendations'][0]['profile'],'write result',1,20,workspace=task_source)
+                replay_path=Path(result['recommendations'][0]['profile'])
+                if legacy_profile:
+                    saved=json.loads(replay_path.read_text())
+                    self.assertEqual(saved.pop('execution'),'api')
+                    replay_path.write_text(json.dumps(saved))
+                replay=run_profile(replay_path,'write result',1,20,workspace=task_source)
                 self.assertEqual(replay['status'],'completed')
+                self.assertEqual(replay['execution'],'api')
                 self.assertTrue((Path(replay['workspace'])/'answer.txt').exists())
                 self.assertEqual((Path(replay['workspace'])/'input.txt').read_text(),'new task input')
                 self.assertFalse((task_source/'answer.txt').exists())
 
     def test_full_local_experiment_and_replay(self):
         self.experiment()
+
+    def test_legacy_replay_profile_uses_metered_api(self):
+        self.experiment(legacy_profile=True)
 
     def test_nested_example_is_not_a_public_entrypoint(self):
         self.experiment(nested_example=True)

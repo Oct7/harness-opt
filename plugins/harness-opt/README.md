@@ -14,14 +14,23 @@ python3 -m venv /path/to/writable/venv
 /path/to/writable/venv/bin/harness-opt models --openrouter
 ```
 
-The skill includes provider/key setup, baseline and evaluation choices. Use
+The skill first offers current environment improvement (recommended) or API model
+comparison, then asks for mode, repetitions (3 recommended), and a time limit.
+Current execution uses existing native login/model settings, needs no new API key,
+and compares quality, time and reported tokens. Existing account billing/quotas
+apply; dollars are unknown and no USD ceiling is enforced. Keychain-only native
+login may be unavailable in copied configuration and remains unverified.
+
+Provider/key setup is included only when API comparison is selected. Use
 `harness-opt configure openrouter --env-file /path/to/project/.env` to prepare a
 configuration without calling an API; use `--api-key-env NAME` or local terminal
 `--prompt-key` for private credential entry.
 
-The public OpenRouter catalog requires no API key. Paid execution requires
+The public OpenRouter catalog requires no API key. `--execution api` requires
 `HARNESS_<NAME>_BASE_URL` and `HARNESS_<NAME>_API_KEY` in `.env` or the environment,
-and explicit `--budget-usd` / `--time-limit` values. Use `--help` for each command.
+and explicit `--budget-usd` / `--time-limit` values. The default `--execution current`
+requires only the time limit. Neither path changes the active conversation's
+connection. Use `--help` for each command.
 
 The shared skill is `skills/harness-opt/SKILL.md`. Full setup, pricing metadata,
 verification and preview limitations: https://github.com/Oct7/harness-opt#readme.

@@ -1,3 +1,36 @@
+# 0.2.0 development preview
+
+The skill now offers current environment improvement (recommended) and optional
+API model comparison. Current execution uses existing native login/model settings
+for steps and structure optimization without new API setup. It preserves the
+active conversation's connection and runs evaluations in local isolated copies.
+The skill asks for mode, repetitions (3 recommended) and time before execution;
+provider/key/model setup and a USD ceiling appear only for API comparison.
+
+Current reports use native-reported input/output counters, with cache and reasoning
+subsets counted once. Missing usage and dollars stay unknown. Quality must pass,
+time or reported tokens must improve, and the other known metric cannot worsen.
+Existing account billing/quotas apply; no dollar ceiling or savings claim is made.
+API experiments retain gateway metering, mandatory USD/time limits, and promotion
+requiring lower measured cost and shorter completion time.
+
+Migration: `optimize` now defaults to `--execution current`. Existing API scripts
+must add `--execution api`; passing a USD ceiling to current execution is rejected.
+Replay profiles record their execution path; older profiles retain API behavior.
+Authentication/transport errors with missing artifacts remain unverified and
+retryable instead of becoming cached quality failures.
+
+Validation: 59 standard-library tests cover current optimization/replay without
+provider discovery or gateways, metric promotion, credential preservation, native
+usage parsing, error classification and existing API flows. Both actual CLIs pass
+eight text/file-tool scenarios against loopback fake providers (twelve requests):
+Claude Code 2.1.263, Codex CLI 0.154.0, LiteLLM 1.100.1. No paid providers or real
+subscription/keychain credentials were used. Keychain-only native authentication
+in copied configuration remains unverified, as do paid compatibility and external
+hook/MCP fixtures. OpenCode then Pi remain planned adapters.
+
+---
+
 # 0.1.2 development preview
 
 Provider setup and target selection now live in the skill. Users are guided through

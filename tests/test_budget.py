@@ -26,3 +26,10 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(states[-1]['reservations'],{token:.4})
         budget.settle(token,.2)
         self.assertEqual(states[-1],{'spent':.2,'reservations':{},'uncertain':False})
+
+    def test_time_only_budget_cannot_authorize_paid_dispatch(self):
+        budget = Budget(None, 10)
+        self.assertGreater(budget.time_left, 0)
+        self.assertIsNone(budget.remaining)
+        with self.assertRaises(BudgetExceeded):
+            budget.reserve(.1)
