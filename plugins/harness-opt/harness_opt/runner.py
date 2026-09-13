@@ -191,6 +191,16 @@ def _install_copy(source, destination):
         shutil.copytree(source, destination)
 
 
+def public_skill_files(target):
+    target = Path(target)
+    if target.is_file():
+        return [target] if target.name == 'SKILL.md' else []
+    plugin = any((target / manifest / 'plugin.json').is_file() for manifest in ('.claude-plugin', '.codex-plugin'))
+    if not plugin and (target / 'SKILL.md').is_file():
+        return [target / 'SKILL.md']
+    return sorted((target / 'skills').glob('*/SKILL.md'))
+
+
 def _activate(runner, workspace, target, entrypoint=None):
     target = Path(target).resolve()
     if target.is_file():
@@ -206,7 +216,7 @@ def _activate(runner, workspace, target, entrypoint=None):
             _install_copy(target, destination)
         metadata = json.loads(manifest.read_text())
         plugin_name = metadata.get('name', target.name)
-        skills = sorted((destination / 'skills').glob('*/SKILL.md'))
+        skills = public_skill_files(destination)
         if entrypoint:
             source_entrypoint = workspace / entrypoint
             if not source_entrypoint.is_relative_to(target):
@@ -221,13 +231,9 @@ def _activate(runner, workspace, target, entrypoint=None):
             name = match.group(1) if match else skill.parent.name
             invocations.append('/' + plugin_name + ':' + name if runner == 'claude' else '$' + name)
         return (['--plugin-dir', str(destination)] if runner == 'claude' else []), ' '.join(invocations) + '\n'
-    skill = target / 'SKILL.md'
-    if not skill.is_file():
-        skills = sorted((target / 'skills').glob('*/SKILL.md'))
-        if not skills:
-            raise ValueError('Target has no native skill entry point')
-    else:
-        skills = [skill]
+    skills = public_skill_files(target)
+    if not skills:
+        raise ValueError('Target has no native skill entry point')
     if entrypoint:
         selected = (workspace / entrypoint).resolve()
         skills = [skill for skill in skills if skill.resolve() == selected]

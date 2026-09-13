@@ -14,9 +14,12 @@ from unittest.mock import patch
 from harness_opt.optimizer import optimize, run_profile
 
 class WorkflowTests(unittest.TestCase):
-    def experiment(self, cheap_cost=0.01, missing=False, mode="cost", combined_failure=False, resume_budget=False, repeats=3):
+    def experiment(self, cheap_cost=0.01, missing=False, mode="cost", combined_failure=False, resume_budget=False, repeats=3, nested_example=False):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); work=root/'source';work.mkdir();(work/'SKILL.md').write_text('Write answer.txt with correct result')
+            if nested_example:
+                (work/'examples/nested').mkdir(parents=True)
+                (work/'examples/nested/SKILL.md').write_text('An example, not a public entrypoint')
             provider=SimpleNamespace(api_key='secret-fixture')
             models=[{'provider':'fake','id':name,'input_per_million':price,'output_per_million':price,'context_window':100,'efforts':['low']} for name,price in [('base',2),('cheap',1)]]
             active={}
@@ -97,6 +100,9 @@ class WorkflowTests(unittest.TestCase):
 
     def test_full_local_experiment_and_replay(self):
         self.experiment()
+
+    def test_nested_example_is_not_a_public_entrypoint(self):
+        self.experiment(nested_example=True)
 
     def test_selected_repetitions_are_executed(self):
         self.experiment(repeats=5)

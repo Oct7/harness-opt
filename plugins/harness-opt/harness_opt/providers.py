@@ -9,6 +9,7 @@ from datetime import date
 from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+from dotenv import dotenv_values
 
 
 class DiscoveryError(RuntimeError):
@@ -25,17 +26,18 @@ class Provider:
     models: list = field(default_factory=list)
 
 
+def validate_provider_url(url, name):
+    if not isinstance(url, str) or any(character.isspace() or character == '\0' for character in url):
+        raise ValueError(f'Invalid provider URL for {name}')
+    parsed = urlparse(url)
+    if parsed.scheme not in ('https', 'http') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError(f'Invalid provider URL for {name}')
+    if parsed.scheme == 'http' and parsed.hostname not in ('localhost', '127.0.0.1', '::1'):
+        raise ValueError('Remote provider URLs must use HTTPS')
+
+
 def load_providers(env_file='.env'):
-    values = {}
-    path = Path(env_file or '.env')
-    if path.exists():
-        for line in path.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            key, sep, value = line.removeprefix('export ').partition('=')
-            if sep:
-                values[key.strip()] = value.strip().strip('\"\'')
+    values = dict(dotenv_values(Path(env_file or '.env'), interpolate=False))
     values.update(os.environ)
     result = {}
     for key, url in values.items():
@@ -46,11 +48,7 @@ def load_providers(env_file='.env'):
         secret = values.get(f'HARNESS_{name}_API_KEY')
         if not secret:
             raise ValueError(f'Missing HARNESS_{name}_API_KEY')
-        parsed = urlparse(url)
-        if parsed.scheme not in ('https', 'http') or not parsed.hostname or parsed.username or parsed.password or parsed.query:
-            raise ValueError(f'Invalid provider URL for {name}')
-        if parsed.scheme == 'http' and parsed.hostname not in ('localhost', '127.0.0.1', '::1'):
-            raise ValueError('Remote provider URLs must use HTTPS')
+        validate_provider_url(url, name)
         models = json.loads(values.get(f'HARNESS_{name}_MODELS', '[]'))
         if not isinstance(models, list):
             raise ValueError(f'HARNESS_{name}_MODELS must be a JSON list')

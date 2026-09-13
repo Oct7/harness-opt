@@ -17,9 +17,10 @@ not newly supported harness-opt runners. Only `claude` and `codex` are implement
 
 Implementation direction: add execution adapters separately from transport/model
 support. A shared SKILL.md is useful, but cannot itself preserve another harness's
-settings, native skill/plugin activation, permissions or usage events. OpenCode is
-a practical next adapter to evaluate because a local CLI and native skills exist;
-this ordering is an engineering judgment, not a measured performance ranking.
+settings, native skill/plugin activation, permissions or usage events. The user-selected adapter order is OpenCode, then Pi. Users should use their own
+harness; they do not need to install all of them. A direct model API test can assess
+response quality/cost, but cannot establish native skill/tool/hook/MCP equivalence.
+No standalone direct-API evaluation mode is implemented.
 
 Bundled runtime code, skill instructions and static patterns remain inside the
 plugin. Generated cases and reports are private run state, kept outside the target

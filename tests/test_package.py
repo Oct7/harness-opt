@@ -14,7 +14,9 @@ class PackageTests(unittest.TestCase):
         codex = json.loads((ROOT / '.agents/plugins/marketplace.json').read_text())
         self.assertEqual((ROOT / claude['plugins'][0]['source']).resolve(), PLUGIN)
         self.assertEqual((ROOT / codex['plugins'][0]['source']['path']).resolve(), PLUGIN)
-        self.assertTrue((PLUGIN / 'skills/harness-opt/SKILL.md').is_file())
+        from harness_opt.runner import public_skill_files
+        self.assertEqual([str(p.relative_to(PLUGIN)) for p in public_skill_files(PLUGIN)], ['skills/harness-opt/SKILL.md'])
+        self.assertEqual(public_skill_files(PLUGIN / 'examples/file-skill'), [PLUGIN / 'examples/file-skill/SKILL.md'])
         patterns = json.loads(files('harness_opt').joinpath('data/patterns.json').read_text())
         self.assertEqual(len(patterns), 4)
         for pattern in patterns:

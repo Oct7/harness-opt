@@ -26,6 +26,13 @@ def parser():
     root = argparse.ArgumentParser(prog='harness-opt', description=__doc__)
     root.add_argument('--version', action='version', version=f'harness-opt {__version__}')
     commands = root.add_subparsers(dest='command', required=True)
+    setup = commands.add_parser('configure', help='Create provider settings without making API calls')
+    setup.add_argument('provider')
+    setup.add_argument('--env-file', type=Path, default=Path('.env'))
+    setup.add_argument('--base-url')
+    key_source = setup.add_mutually_exclusive_group()
+    key_source.add_argument('--api-key-env', help='Read the API key from this environment variable')
+    key_source.add_argument('--prompt-key', action='store_true', help='Prompt in a local terminal with hidden input')
     models = commands.add_parser('models', help='Discover configured provider models and prices')
     models.add_argument('--env-file', type=Path, default=Path('.env'))
     models.add_argument('--openrouter', action='store_true', help='Read the public OpenRouter price catalog without credentials')
@@ -76,7 +83,10 @@ def main(argv=None):
                     results.append({'provider': name, 'error': getattr(exc, 'category', type(exc).__name__)})
             print(json.dumps(results, indent=2, ensure_ascii=False))
             return 0 if results and not any('error' in r for r in results) else 1
-        if command == 'report':
+        if command == 'configure':
+            from .configure import configure
+            result = configure(**args)
+        elif command == 'report':
             from .optimizer import read_report
             result = read_report(args['run_id'], args['state_dir'], args['format'])
         elif command == 'optimize':

@@ -20,7 +20,7 @@ class CliTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as exit:
             main(['--version'])
         self.assertEqual(exit.exception.code, 0)
-        self.assertIn('0.1.1', out.getvalue())
+        self.assertIn('0.1.2', out.getvalue())
 
     def test_repetition_count_validation(self):
         argv = ['optimize', '.', '--runner', 'codex', '--budget-usd', '1', '--time-limit', '60']

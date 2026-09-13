@@ -11,7 +11,7 @@ from .budget import Budget, BudgetExceeded
 from .evaluation import direct_checks, json_output, judge_prompt, materialize, semantic_result, validate_cases
 from .gateway import Gateway
 from .providers import discover_models, load_providers
-from .runner import WorkspaceSnapshot, capture_profile, execute
+from .runner import WorkspaceSnapshot, capture_profile, execute, public_skill_files
 from .store import Store, fingerprint
 
 
@@ -178,7 +178,7 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
     if not model_id:
         raise ValueError('Cannot establish the current model; provide --baseline-model')
     snapshot=WorkspaceSnapshot(workspace,directory/('snapshot-'+uuid.uuid4().hex[:8]))
-    skill_files=([target] if target.is_file() else sorted(target.rglob('SKILL.md')))
+    skill_files=public_skill_files(target)
     if not skill_files:
         raise ValueError('Target has no public SKILL.md entrypoints')
     relative=target.relative_to(workspace)

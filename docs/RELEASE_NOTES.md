@@ -1,3 +1,29 @@
+# 0.1.2 development preview
+
+Provider setup and target selection now live in the skill. Users are guided through
+provider/key configuration, baseline model/effort, mode, repetitions and explicit
+budget/time limits when they actually start an evaluation.
+
+`harness-opt configure` creates or updates a private .env without API calls. Keys
+come from a named environment variable or hidden local terminal input, never a
+command-line secret argument. Existing settings are preserved, updates are atomic,
+and configured does not imply authenticated or measured.
+
+The file-summary demo is now bundled inside the installed plugin, with a shortlist
+of public target candidates. Public skill discovery excludes nested examples, so
+bundled demonstrations are not mistaken for additional plugin entrypoints.
+
+Execution code, baseline defaults/capture rules and evaluation definitions remain
+inside the plugin; private credentials and results remain outside distribution.
+OpenCode then Pi are the user-selected next adapter priorities. Existing adapters
+are still Claude Code and Codex; direct-API-only skill validation is not implemented.
+
+Validation: 48 tests, including credential round trips, preservation, private file
+permissions, noninteractive secret-input rejection and public-entrypoint discovery.
+Paid model comparisons and external hook/MCP fixtures remain unverified.
+
+---
+
 # 0.1.1 development preview
 
 The skill now asks for an optimization mode and final repetition count before
