@@ -1,3 +1,26 @@
+# 0.1.1 development preview
+
+The skill now asks for an optimization mode and final repetition count before
+execution, reusing choices already provided by the user. Three repetitions are
+recommended. `optimize --repeats N` controls final executions per candidate per
+case; values below three produce provisional candidates without verified profiles.
+
+Frozen cases, fixtures, evaluation criteria and the exploration/held-out split are
+saved in a separate `cases.json` before baseline execution, linked from the report.
+Reports record the chosen mode/count and whether cases were reused.
+
+The plugin now bundles a primary-source survey of OpenCode, Gemini CLI, Pi, Aider,
+Cline, Copilot CLI, opencodex, LiteLLM and Ollama. This is documentation of candidate
+integrations; native adapters remain Claude Code and Codex. Runtime code and static
+references remain self-contained in the plugin. Private run data remains outside
+the target workspace.
+
+Validation: 43 unit/integration tests, including selected five-repeat execution,
+one-repeat provisional results, invalid count rejection and persisted held-out cases.
+Paid-provider quality verification and external hook/MCP fixtures remain pending.
+
+---
+
 # 0.1.0 development preview
 
 Native Claude Code/Codex skill evaluation with `models`, `optimize`, `report`, and

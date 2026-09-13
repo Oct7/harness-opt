@@ -5,6 +5,8 @@ import math
 from pathlib import Path
 import sys
 
+from . import __version__
+
 
 def positive(value):
     number = float(value)
@@ -13,9 +15,16 @@ def positive(value):
     return number
 
 
+def positive_integer(value):
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError('must be an integer of at least 1')
+    return number
+
+
 def parser():
     root = argparse.ArgumentParser(prog='harness-opt', description=__doc__)
-    root.add_argument('--version', action='version', version='harness-opt 0.1.0')
+    root.add_argument('--version', action='version', version=f'harness-opt {__version__}')
     commands = root.add_subparsers(dest='command', required=True)
     models = commands.add_parser('models', help='Discover configured provider models and prices')
     models.add_argument('--env-file', type=Path, default=Path('.env'))
@@ -33,6 +42,8 @@ def parser():
     opt.add_argument('--baseline-provider')
     opt.add_argument('--effort')
     opt.add_argument('--cases', type=int, default=4)
+    opt.add_argument('--repeats', type=positive_integer, default=3,
+                     help='Final executions per candidate per case (recommended: 3; fewer are provisional)')
     opt.add_argument('--force', action='store_true')
     opt.add_argument('--resume', help='Resume a saved run with an explicit cumulative budget ceiling')
     report = commands.add_parser('report', help='Read a saved report')

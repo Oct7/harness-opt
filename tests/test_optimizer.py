@@ -14,7 +14,7 @@ from unittest.mock import patch
 from harness_opt.optimizer import optimize, run_profile
 
 class WorkflowTests(unittest.TestCase):
-    def experiment(self, cheap_cost=0.01, missing=False, mode="cost", combined_failure=False, resume_budget=False):
+    def experiment(self, cheap_cost=0.01, missing=False, mode="cost", combined_failure=False, resume_budget=False, repeats=3):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); work=root/'source';work.mkdir();(work/'SKILL.md').write_text('Write answer.txt with correct result')
             provider=SimpleNamespace(api_key='secret-fixture')
@@ -49,7 +49,12 @@ class WorkflowTests(unittest.TestCase):
                 return {'status':'completed','output':output,'duration':2 if profile['model']=='base' else 1,'artifacts':{}}
             profile={'runner':'codex','model':'base','effort':'low','version':'test','workspace':str(work)}
             with patch('harness_opt.optimizer.capture_profile',return_value=profile),patch('harness_opt.optimizer.load_providers',return_value={'fake':provider}),patch('harness_opt.optimizer.discover_models',return_value=models),patch('harness_opt.optimizer.Gateway',FakeGateway),patch('harness_opt.optimizer.execute',side_effect=fake_execute):
-                result=optimize(work,'codex',mode,0.065 if resume_budget else 10,60,root/'state',None)
+                result=optimize(work,'codex',mode,0.065 if resume_budget else 10,60,root/'state',None,repeats=repeats)
+                case_file=Path(result['cases_file'])
+                frozen=json.loads(case_file.read_text())['cases']
+                self.assertEqual(frozen,result['cases'])
+                self.assertEqual([c['split'] for c in frozen],['exploration','exploration','exploration','heldout'])
+                self.assertEqual(result['confirmation_repeats'],repeats)
                 if resume_budget:
                     self.assertEqual(result['status'],'budget_stopped')
                     prior=result['evaluation_cost_usd']
@@ -65,6 +70,12 @@ class WorkflowTests(unittest.TestCase):
                     self.assertEqual(result['status'],'no_verified_improvement')
                     self.assertEqual(result['recommendations'],[])
                     return
+                if repeats < 3:
+                    self.assertEqual(result['status'],'provisional_improvement',result['reasons'])
+                    self.assertEqual(result['recommendations'],[])
+                    self.assertTrue(result['provisional_candidates'])
+                    self.assertEqual(len(result['trials'][-1]['runs']),4)
+                    return
                 self.assertEqual(result['status'],'verified_improvement',result['reasons'])
                 self.assertEqual((root/'state'/result['id']).stat().st_mode & 0o777,0o700)
                 from harness_opt.optimizer import read_report
@@ -73,7 +84,7 @@ class WorkflowTests(unittest.TestCase):
                     self.assertTrue(any(t['name'].startswith('confirm:combined:') and t['status']=='quality_failure' for t in result['trials']))
                     self.assertFalse(any('combined' in r['name'] for r in result['recommendations']))
                     return
-                self.assertEqual(len(result['trials'][-1]['runs']),12)
+                self.assertEqual(len(result['trials'][-1]['runs']),20 if repeats==5 else 12)
                 self.assertFalse((work/'answer.txt').exists())
                 task_source=root/'new-task'
                 task_source.mkdir()
@@ -86,6 +97,12 @@ class WorkflowTests(unittest.TestCase):
 
     def test_full_local_experiment_and_replay(self):
         self.experiment()
+
+    def test_selected_repetitions_are_executed(self):
+        self.experiment(repeats=5)
+
+    def test_single_repeat_is_provisional(self):
+        self.experiment(repeats=1)
 
     def test_cheaper_unit_price_expensive_output_excluded(self):
         self.experiment(cheap_cost=0.04)

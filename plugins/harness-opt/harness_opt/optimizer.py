@@ -25,8 +25,11 @@ def _write_report(directory, report):
     directory.mkdir(parents=True,exist_ok=True)
     _atomic_text(directory/'report.json',json.dumps(report,indent=2,ensure_ascii=False,default=str))
     lines=[f'# harness-opt {report["id"]}', '', f'Status: {report["status"]}',
+           f'Mode: {report.get("mode", "unknown")}; confirmation repeats per case: {report.get("confirmation_repeats", "unknown")}',
            f'Evaluation cost (USD): {report.get("evaluation_cost_usd", "unknown")}', '',
            'Recommendations are verified only for the recorded environment and generated cases.', '']
+    if report.get('cases_file'):
+        lines += ['Frozen cases and held-out split: [cases.json](cases.json)', '']
     for trial in report.get('trials',[]):
         lines.append(f'- {trial["name"]}: {trial["status"]}; cost={trial.get("mean_cost_usd", "unknown")}; duration={trial.get("mean_duration", "unknown")}')
     lines += ['', '## Reasons']+[f'- {x}' for x in report.get('reasons',[])]
@@ -125,11 +128,13 @@ def _evidence(result, workspace, before, secrets):
 
 def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
              baseline_model=None, baseline_provider=None, effort=None, cases=4,
-             force=False, resume=None, workspace=None):
+             force=False, resume=None, workspace=None, repeats=3):
     if mode not in {'all','steps','speed','cost','structure'}:
         raise ValueError('Unknown optimization mode')
     if cases < 4:
         raise ValueError('At least four cases are required')
+    if type(repeats) is not int or repeats < 1:
+        raise ValueError('Repetitions must be an integer of at least 1')
     target=Path(target).resolve()
     if not target.exists():
         raise ValueError('Target does not exist')
@@ -151,7 +156,9 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
     budget=Budget(budget_usd,time_limit,on_change=lambda state:store.put('budget',run_id,state))
     started=time.monotonic()
     previous_spend=0.0
-    report={'id':run_id,'status':'no_verified_improvement','trials':[],'reasons':[], 'recommendations':[], 'scope':'recorded environment and generated cases only'}
+    report={'id':run_id,'status':'no_verified_improvement','trials':[],'reasons':[],
+            'recommendations':[],'provisional_candidates':[], 'mode':mode,
+            'confirmation_repeats':repeats,'scope':'recorded environment and generated cases only'}
     profile=capture_profile(runner,workspace,model=baseline_model,effort=effort)
     if profile.get('requires_external_fixture') and not profile.get('external_isolation_verified'):
         raise ValueError('Native hooks/MCP require an independently isolated external fixture before optimization')
@@ -279,6 +286,7 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
     try:
         case_key=fingerprint({'identity':identity,'generator':1})
         case_set=None if force else store.get('cases',case_key)
+        report['cases_reused']=case_set is not None
         if case_set is None:
             case_set=[]
             for entry,source in original.items():
@@ -304,6 +312,9 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
                 if fixture_path.exists() or any(part.startswith('.') for part in Path(fixture).parts):
                     case['unverified_reason']='Generated fixture would overwrite an existing file or native configuration'
         report['cases']=case_set
+        report['cases_file']=str(directory/'cases.json')
+        _atomic_text(directory/'cases.json',json.dumps({'cases':case_set},indent=2,ensure_ascii=False))
+        _write_report(directory,report)
         for case in case_set:
             if case.get('unverified_reason'):
                 report['reasons'].append(case['unverified_reason'])
@@ -366,7 +377,7 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
                     record=trial(f'{model["provider"]}/{model["id"]}:{candidate_effort}',model,{},candidate_effort,explore)
                     if record['status']=='passed':
                         passing.append(record)
-        # All promotion uses untouched cases and at least three independent runs.
+        # Confirmation includes held-out cases; fewer than three runs stay provisional.
         finalists=list(passing)
         change_trials=[p for p in passing if p['changes']]
         model_trials=[p for p in passing if not p['changes']]
@@ -399,8 +410,13 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
             base_cost=sum(base_costs)/len(base_costs) if all(c is not None for c in base_costs) else None
             base_time=sum(b['result']['duration'] for b in baselines.values())/len(baselines)
             for candidate in finalists:
-                final=trial('confirm:'+candidate['name'],candidate['model'],candidate['changes'],candidate['effort'],case_set,3)
+                final=trial('confirm:'+candidate['name'],candidate['model'],candidate['changes'],candidate['effort'],case_set,repeats)
                 if final['status']=='passed' and base_cost is not None and final['mean_cost_usd'] is not None and final['mean_cost_usd']<base_cost and final['mean_duration']<base_time:
+                    if repeats < 3:
+                        final['provisional']=True
+                        report['provisional_candidates'].append({'name':final['name'],'cost_usd':final['mean_cost_usd'],
+                                                               'duration':final['mean_duration'],'repeats':repeats})
+                        continue
                     index=len(report['recommendations'])+1
                     copy=snapshot.restore(directory/f'approved-{index}-{uuid.uuid4().hex[:8]}')
                     diff=[]
@@ -409,12 +425,15 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
                         (copy/p).write_text(content)
                         diff.extend(difflib.unified_diff(((workspace/p).read_text() if (workspace/p).exists() else '').splitlines(True),content.splitlines(True),fromfile=p,tofile=p))
                     (directory/f'approved-{index}.diff').write_text(''.join(diff))
-                    replay={'runner_profile':dict(profile,model=final['model']['id'],effort=final['effort']), 'provider':final['model']['provider'],'model':final['model'],'workspace':str(copy),'target':str(copy/relative),'verified_scope':report['scope'],'approved_hash':WorkspaceSnapshot(copy,directory/('integrity-'+uuid.uuid4().hex[:8])).fingerprint}
+                    replay={'runner_profile':dict(profile,model=final['model']['id'],effort=final['effort']), 'provider':final['model']['provider'],'model':final['model'],'workspace':str(copy),'target':str(copy/relative),'verified_scope':report['scope'],'confirmation_repeats':repeats,'approved_hash':WorkspaceSnapshot(copy,directory/('integrity-'+uuid.uuid4().hex[:8])).fingerprint}
                     replay_path=directory/f'profile-{index}.json'
                     replay_path.write_text(json.dumps(replay,indent=2))
                     report['recommendations'].append({'name':final['name'],'profile':str(replay_path),'cost_usd':final['mean_cost_usd'],'duration':final['mean_duration']})
             if report['recommendations']:
                 report['status']='verified_improvement'
+            elif report['provisional_candidates']:
+                report['status']='provisional_improvement'
+                report['reasons'].append('Fewer than three confirmation runs were requested; improvements remain provisional')
     except (BudgetExceeded,TimeoutError) as exc:
         report['status']='budget_stopped'
         for trial_record in report['trials']:

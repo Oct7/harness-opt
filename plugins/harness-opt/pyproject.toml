@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "harness-opt"
-version = "0.1.0"
+version = "0.1.1"
 description = "Measure native coding-agent skills and validate cheaper, faster configurations"
 readme = "README.md"
 requires-python = ">=3.11"

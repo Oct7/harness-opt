@@ -36,7 +36,9 @@ codex plugin add harness-opt@harness-opt
 
 Public GitHub marketplace: use `Oct7/harness-opt` in place of the local path in
 either command. Repository: https://github.com/Oct7/harness-opt.
-Invoke the `harness-opt` skill in either tool; it uses the calling native runner.
+Invoke the `harness-opt` skill in either tool; it uses the calling native runner
+and asks for the mode and final repetition count before execution. Previously
+specified choices are reused for that run; three repetitions are recommended.
 See the official [Claude plugin reference](https://code.claude.com/docs/en/plugins-reference)
 and [Codex plugins documentation](https://developers.openai.com/codex/plugins).
 
@@ -63,7 +65,7 @@ harness-opt models --openrouter  # public price catalog; no API key or paid requ
 harness-opt models --env-file .env
 harness-opt optimize examples/file-skill --runner codex --mode all \
   --workspace examples --baseline-provider local --baseline-model your-model-id \
-  --effort medium --budget-usd 2 --time-limit 600
+  --effort medium --repeats 3 --budget-usd 2 --time-limit 600
 harness-opt report RUN_ID
 harness-opt run /path/to/profile-1.json 'Summarize input.txt' \
   --workspace /path/to/project --budget-usd 1 --time-limit 120
@@ -80,9 +82,15 @@ ceiling including earlier invocations; `--time-limit` starts a new wall-clock wi
 
 Modes: `steps`, `speed`, `cost`, `structure`, or `all` (default). Original requirements
 are frozen before proposals. Direct artifact checks precede blinded baseline-model
-judgment. Finalists receive reversed-order judgment and at least three repetitions.
+judgment. Finalists receive reversed-order judgment and `--repeats` executions per
+case (default/recommended: 3). One or two repetitions are allowed for quick trials
+and yield provisional candidates only, without verified replay profiles.
 Promotion requires quality plus lower measured cost **and** shorter completion time.
 A cheaper token price alone does not qualify. No improvement is a valid outcome.
+
+Before baseline execution, each run saves `cases.json` with frozen criteria, fixtures
+and the exploration/held-out split. The report links it and records whether cases
+were reused. Cases remain in SQLite as well.
 
 Every run writes Markdown and JSON reports, SQLite records, call telemetry, and—when
 validated—an improved copy, unified diff, and replay profile. Unknown costs and
@@ -115,7 +123,7 @@ CI covers Python 3.11 and 3.13 on Linux and macOS. Local validation uses Claude 
 successfully using temporary HOME/config directories, without changing user settings.
 Both actual CLIs also completed text and file-tool round trips against loopback
 providers (four smoke scenarios), with measured usage and streaming timing.
-The default unit/integration suite contains 40 checks; it does not require paid APIs.
+The default unit/integration suite contains 43 checks; it does not require paid APIs.
 
 Before a stable release, supply a provider and explicit paid budget, verify real file
 work, hooks and subagents end to end in both runners, then promote the development preview to a stable release. Baseline capture covers explicit model/effort and native files on disk; session-only
@@ -131,3 +139,8 @@ Patterns are original descriptions; no upstream skill implementation is vendored
 Anthropic/OpenAI references have per-file licensing; Superpowers and gstack are MIT.
 The pinned OpenAI skills repository is deprecated and is retained only as historical
 pattern provenance. Project code is MIT licensed.
+
+Other execution harnesses and provider tools are surveyed in the bundled
+[harness reference](plugins/harness-opt/references/harnesses.md). OpenCode, Gemini CLI,
+Pi, Aider, Cline and Copilot CLI are researched candidates, not implemented runners.
+opencodex/LiteLLM are transport options; Ollama supplies model inference.
