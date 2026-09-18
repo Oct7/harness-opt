@@ -33,3 +33,17 @@ class BudgetTests(unittest.TestCase):
         self.assertIsNone(budget.remaining)
         with self.assertRaises(BudgetExceeded):
             budget.reserve(.1)
+
+    def test_time_limit_is_per_invocation(self):
+        budget = Budget(1, 10)
+        self.assertEqual(budget.time_limit, 10)
+        self.assertGreater(budget.time_left, 9)
+        budget.start_invocation()
+        budget._invocation_deadline -= 20
+        self.assertEqual(budget.time_left, 0)
+        with self.assertRaises(BudgetExceeded):
+            budget.reserve(.1)
+        budget.start_invocation()
+        self.assertGreater(budget.time_left, 9)
+        token = budget.reserve(.1)
+        budget.settle(token, .1)

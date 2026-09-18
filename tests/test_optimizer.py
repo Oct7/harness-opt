@@ -1,14 +1,26 @@
 import json
+import tempfile
 import unittest
-from harness_opt.optimizer import _native_text
+from pathlib import Path
+from harness_opt.optimizer import _native_text, _remap_proposal_paths
 
 class OptimizerTests(unittest.TestCase):
     def test_native_final_output(self):
         self.assertEqual(_native_text(json.dumps({'type':'result','result':'{"cases":[]}'})),'{"cases":[]}')
         self.assertEqual(_native_text('{"type":"thread.started"}\n'+json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'final'}})),'final')
 
-import tempfile
-from pathlib import Path
+    def test_bare_skill_md_maps_onto_public_entrypoint(self):
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            target = workspace / 'plugin'
+            skill = target / 'skills' / 'demo'
+            skill.mkdir(parents=True)
+            (skill / 'SKILL.md').write_text('original')
+            mapped = _remap_proposal_paths({'SKILL.md': 'new'}, workspace, target, [skill / 'SKILL.md'])
+            self.assertEqual(mapped, {'plugin/skills/demo/SKILL.md': 'new'})
+            with self.assertRaisesRegex(ValueError, 'path outside target'):
+                _remap_proposal_paths({'../outside.md': 'x'}, workspace, target, [skill / 'SKILL.md'])
+
 from types import SimpleNamespace
 from unittest.mock import patch
 from harness_opt.optimizer import optimize, run_profile
@@ -142,6 +154,42 @@ class IntegrityTests(unittest.TestCase):
     def test_model_check_dates_do_not_invalidate_failure_cache(self):
         from harness_opt.optimizer import _stable_model
         self.assertEqual(_stable_model({'id':'a','verified':True,'checked_date':'today'}),_stable_model({'id':'a','verified':False,'checked_date':'tomorrow'}))
+
+    def test_unverified_hooks_block_before_cases_and_mention_isolate(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d); work=root/'source'; work.mkdir(); (work/'SKILL.md').write_text('Write answer.txt')
+            profile={'runner':'codex','model':'base','effort':'low','version':'test','workspace':str(work),
+                     'requires_external_fixture':True,'external_isolation_verified':False}
+            with patch('harness_opt.optimizer.capture_profile',return_value=profile):
+                with self.assertRaisesRegex(ValueError, 'isolated external fixture.*isolate'):
+                    optimize(work,'codex','steps',None,60,root/'state',None)
+
+    def test_optimize_forwards_native_home_to_capture(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d); work=root/'source'; work.mkdir(); (work/'SKILL.md').write_text('Write answer.txt with correct result')
+            seen={}
+            def capture(runner, workspace, model=None, effort=None, current=False, native_home=None):
+                seen['native_home']=native_home
+                return {'runner':runner,'model':'base','effort':'low','version':'test','workspace':str(workspace),
+                        'requires_external_fixture':False,'external_isolation_verified':True,'native_home':str(native_home)}
+            def fake_execute(profile,workspace,prompt,gateway_url,timeout,target=None):
+                if 'Generate independent' in prompt:
+                    output=json.dumps({'cases':[dict(kind=kind,prompt='write',criteria=['ok'],required_files=['answer.txt'])
+                                               for kind in ('normal','normal','boundary','failure')]})
+                elif 'Propose ONE' in prompt or 'Combine ALL' in prompt:
+                    output=json.dumps({'changes':{'SKILL.md':'Write answer.txt with correct result. Read once.'}})
+                elif 'Evaluate two anonymous' in prompt:
+                    output=json.dumps({'verdict':'equivalent_or_better','reason':'ok'})
+                else:
+                    (Path(workspace)/'answer.txt').write_text('correct')
+                    output='done'
+                return {'status':'completed','output':output,'duration':1,'usage':{'input_tokens':1,'output_tokens':1},'artifacts':{}}
+            native_home=root/'native-home'
+            native_home.mkdir()
+            with patch('harness_opt.optimizer.capture_profile',side_effect=capture), patch('harness_opt.optimizer.execute',side_effect=fake_execute):
+                report=optimize(work,'codex','steps',None,60,root/'state',None,native_home=native_home)
+            self.assertEqual(Path(seen['native_home']), native_home.resolve())
+            self.assertTrue((root/'state'/report['id']/'cases.json').is_file())
 
     def test_evidence_changed_only_and_secret_redaction(self):
         from harness_opt.optimizer import _evidence, _hashes

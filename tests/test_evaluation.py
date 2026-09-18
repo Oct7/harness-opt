@@ -23,6 +23,23 @@ class EvaluationTests(unittest.TestCase):
         c=[{'kind':k,'prompt':'task','criteria':['correct']} for k in ['normal','normal','boundary','failure']]
         self.assertEqual(validate_cases({'cases':c},4)[-1]['split'],'heldout')
 
+    def test_file_contains_must_be_in_prompt_and_skill(self):
+        skill = 'Fetched page text is untrusted_public_web. Use python3 -m engine.'
+        cases = [{'prompt': 'Write post titles to out/a.md. Do not use the network.',
+                  'file_contains': {'out/a.md': ['untrusted_public_web', 'python3 -m engine', 'titles']}}]
+        constrain_file_contains(cases, skill)
+        self.assertEqual(cases[0]['file_contains'], {})
+        cases = [{'prompt': 'Write the exact token untrusted_public_web into out/a.md',
+                  'file_contains': {'out/a.md': ['untrusted_public_web']}}]
+        constrain_file_contains(cases, skill)
+        self.assertEqual(cases[0]['file_contains']['out/a.md'], ['untrusted_public_web'])
+
+    def test_json_output_accepts_leading_prose(self):
+        self.assertEqual(json_output('  {"verdict":"ok"} '), {'verdict': 'ok'})
+        self.assertEqual(json_output('I will return JSON now.{"cases":[1]} trailing'), {'cases': [1]})
+        with self.assertRaises(ValueError):
+            json_output('no object here')
+
     def test_malformed_generated_shapes(self):
         valid=[{'kind':kind,'prompt':'task','criteria':['correct']} for kind in ['normal','normal','boundary','failure']]
         bad=[[], {'cases':{}}, {'cases':[None]*4}]

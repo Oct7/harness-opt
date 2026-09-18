@@ -11,7 +11,13 @@ def json_output(text):
         if '\n' not in text:
             raise ValueError('Incomplete fenced JSON response')
         text = text.split('\n',1)[1].rsplit('```',1)[0].strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except ValueError:
+        start = text.find('{')
+        if start < 0:
+            raise
+        return json.JSONDecoder().raw_decode(text[start:])[0]
 
 
 def safe_path(root, relative):
@@ -66,6 +72,20 @@ def validate_cases(data, count):
         # Generated commands are never authorization to mutate external systems.
         if c.get('external_services'):
             c['unverified_reason'] = 'External service fixture must be independently configured by the user'
+    return cases
+
+
+def constrain_file_contains(cases, skill_text):
+    """Keep file_contains tokens that the prompt required and the skill actually uses."""
+    blob = skill_text if isinstance(skill_text, str) else '\n'.join(skill_text or [])
+    for case in cases:
+        prompt = case.get('prompt') or ''
+        cleaned = {}
+        for path, fragments in (case.get('file_contains') or {}).items():
+            kept = [item for item in fragments if isinstance(item, str) and item in prompt and item in blob]
+            if kept:
+                cleaned[path] = kept
+        case['file_contains'] = cleaned
     return cases
 
 

@@ -88,3 +88,115 @@ class CurrentWorkflowTests(unittest.TestCase):
 
     def test_lower_tokens_do_not_hide_slower_execution(self):
         self.experiment(slower=True)
+
+    def test_each_native_call_gets_full_time_limit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / 'source'
+            source.mkdir()
+            (source / 'SKILL.md').write_text('Write answer.txt with correct result.')
+            timeouts = []
+            clock = [1000.0]
+            profile = {'runner': 'codex', 'model': 'existing-model', 'effort': 'low',
+                       'version': 'fixture', 'workspace': str(source)}
+            def execute(active, work, prompt, gateway_url, timeout, target=None):
+                timeouts.append(timeout)
+                clock[0] += 100
+                if 'Generate independent' in prompt:
+                    output = json.dumps({'cases': [dict(kind=kind, prompt='Write the file.', criteria=['Correct file'], required_files=['answer.txt'])
+                        for kind in ('normal', 'normal', 'boundary', 'failure')]})
+                elif 'Propose ONE' in prompt or 'Combine ALL' in prompt:
+                    output = json.dumps({'changes': {'SKILL.md': 'Write answer.txt with correct result. Read once.'}})
+                elif 'Evaluate two anonymous' in prompt:
+                    output = json.dumps({'verdict': 'equivalent_or_better', 'reason': 'Required artifact matches.'})
+                else:
+                    (work / 'answer.txt').write_text('correct')
+                    output = 'done'
+                return {'status': 'completed', 'output': output, 'duration': 1,
+                        'usage': {'input_tokens': 10, 'output_tokens': 2}, 'artifacts': {}}
+            with patch('harness_opt.budget.time.monotonic', side_effect=lambda: clock[0]), \
+                 patch('harness_opt.optimizer.time.monotonic', side_effect=lambda: clock[0]), \
+                 patch('harness_opt.optimizer.capture_profile', return_value=profile), \
+                 patch('harness_opt.optimizer.execute', side_effect=execute), \
+                 patch('harness_opt.optimizer.load_providers', side_effect=AssertionError), \
+                 patch('harness_opt.optimizer.Gateway', side_effect=AssertionError):
+                optimize(source, 'codex', 'steps', None, 30, root / 'state', None, repeats=1)
+            self.assertGreater(len(timeouts), 1)
+            self.assertTrue(all(t == 30 for t in timeouts), timeouts)
+
+    def test_current_speed_requires_grok(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / 'source'
+            source.mkdir()
+            (source / 'SKILL.md').write_text('Work.')
+            with self.assertRaisesRegex(ValueError, 'implemented for grok'):
+                optimize(source, 'codex', 'speed', None, 60, Path(temp) / 'state', None)
+
+    def test_grok_current_compares_native_models_without_gateway(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / 'source'
+            source.mkdir()
+            (source / 'SKILL.md').write_text('Write answer.txt with correct result.')
+            seen = []
+            profile = {'runner': 'grok', 'model': 'grok-4.6', 'effort': 'high',
+                       'version': 'fixture', 'workspace': str(source)}
+            def execute(active, work, prompt, gateway_url, timeout, target=None):
+                self.assertIsNone(gateway_url)
+                seen.append(active.get('model'))
+                if 'Generate independent' in prompt:
+                    output = json.dumps({'cases': [dict(kind=kind, prompt='Write the file.', criteria=['Correct file'], required_files=['answer.txt'])
+                        for kind in ('normal', 'normal', 'boundary', 'failure')]})
+                elif 'Evaluate two anonymous' in prompt:
+                    output = json.dumps({'verdict': 'equivalent_or_better', 'reason': 'Required artifact matches.'})
+                else:
+                    (work / 'answer.txt').write_text('correct')
+                    output = 'done'
+                faster = active.get('model') == 'grok-4.5'
+                return {'status': 'completed', 'output': output, 'duration': 1 if faster else 2,
+                        'usage': {'input_tokens': 50 if faster else 100, 'output_tokens': 10}, 'artifacts': {}}
+            with patch('harness_opt.optimizer.capture_profile', return_value=profile), \
+                 patch('harness_opt.optimizer.execute', side_effect=execute), \
+                 patch('harness_opt.optimizer.native_models', return_value=[
+                     {'id': 'grok-4.6', 'provider': 'native', 'efforts': ['high']},
+                     {'id': 'grok-4.5', 'provider': 'native', 'efforts': ['high']}]), \
+                 patch('harness_opt.optimizer.load_providers', side_effect=AssertionError('Current must not load API settings')), \
+                 patch('harness_opt.optimizer.Gateway', side_effect=AssertionError('Current must not start a gateway')):
+                report = optimize(source, 'grok', 'speed', None, 60, root / 'state', None, repeats=3)
+            self.assertIn('grok-4.5', seen)
+            self.assertEqual(report['status'], 'verified_improvement', report['reasons'])
+            self.assertTrue(any('grok-4.5' in rec['name'] for rec in report['recommendations']))
+            replay = json.loads(Path(report['recommendations'][0]['profile']).read_text())
+            self.assertEqual(replay['runner_profile']['model'], 'grok-4.5')
+
+    def test_unsupported_captured_effort_is_omitted_for_other_models(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / 'source'
+            source.mkdir()
+            (source / 'SKILL.md').write_text('Write answer.txt with correct result.')
+            efforts = []
+            profile = {'runner': 'grok', 'model': 'grok-4.6', 'effort': 'xhigh',
+                       'version': 'fixture', 'workspace': str(source)}
+            def execute(active, work, prompt, gateway_url, timeout, target=None):
+                if 'Write the file' in prompt or prompt == 'Write the file.':
+                    efforts.append((active.get('model'), active.get('effort')))
+                if 'Generate independent' in prompt:
+                    output = json.dumps({'cases': [dict(kind=kind, prompt='Write the file.', criteria=['Correct file'], required_files=['answer.txt'])
+                        for kind in ('normal', 'normal', 'boundary', 'failure')]})
+                elif 'Evaluate two anonymous' in prompt:
+                    output = json.dumps({'verdict': 'equivalent_or_better', 'reason': 'ok'})
+                else:
+                    (work / 'answer.txt').write_text('correct')
+                    output = 'done'
+                return {'status': 'completed', 'output': output, 'duration': 1,
+                        'usage': {'input_tokens': 10, 'output_tokens': 2}, 'artifacts': {}}
+            with patch('harness_opt.optimizer.capture_profile', return_value=profile), \
+                 patch('harness_opt.optimizer.execute', side_effect=execute), \
+                 patch('harness_opt.optimizer.native_models', return_value=[
+                     {'id': 'grok-4.6', 'provider': 'native', 'efforts': ['xhigh']},
+                     {'id': 'grok-4.5', 'provider': 'native', 'efforts': ['']}]), \
+                 patch('harness_opt.optimizer.load_providers', side_effect=AssertionError), \
+                 patch('harness_opt.optimizer.Gateway', side_effect=AssertionError):
+                optimize(source, 'grok', 'speed', None, 30, root / 'state', None, repeats=1)
+            self.assertIn(('grok-4.5', ''), efforts)

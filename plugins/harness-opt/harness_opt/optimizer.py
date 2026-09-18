@@ -9,10 +9,10 @@ import uuid
 from pathlib import Path
 
 from .budget import Budget, BudgetExceeded
-from .evaluation import direct_checks, json_output, judge_prompt, materialize, semantic_result, validate_cases
+from .evaluation import constrain_file_contains, direct_checks, json_output, judge_prompt, materialize, semantic_result, validate_cases
 from .gateway import Gateway
 from .providers import discover_models, load_providers
-from .runner import WorkspaceSnapshot, capture_profile, execute, public_skill_files
+from .runner import WorkspaceSnapshot, capture_profile, execute, native_models, public_skill_files
 from .store import Store, fingerprint
 
 
@@ -58,6 +58,8 @@ def _native_text(output):
         data=json.loads(output)
         if isinstance(data,dict) and isinstance(data.get('result'),str):
             return data['result']
+        if isinstance(data,dict) and isinstance(data.get('text'),str):
+            return data['text']
         if isinstance(data,dict) and ('cases' in data or 'verdict' in data or 'changes' in data):
             return output
     except (ValueError,TypeError):
@@ -92,6 +94,32 @@ def _proposal_changes(output):
     if any(not isinstance(path,str) or not isinstance(content,str) for path,content in data['changes'].items()):
         raise ValueError('Proposal changes must map paths to complete text content')
     return data['changes']
+
+
+def _remap_proposal_paths(changes, workspace, target_root, skill_files):
+    from .evaluation import safe_path
+    workspace=Path(workspace).resolve()
+    target_root=Path(target_root).resolve()
+    skills=[Path(path).resolve() for path in skill_files]
+    remapped={}
+    for path,content in changes.items():
+        try:
+            changed=safe_path(workspace,path)
+        except ValueError:
+            changed=None
+        if changed is not None and changed.is_relative_to(target_root):
+            remapped[str(changed.relative_to(workspace))]=content
+            continue
+        name=Path(path).name
+        matches=[item for item in skills if item.name==name and item.is_relative_to(target_root)]
+        if name=='SKILL.md' and len(skills)==1 and skills[0].is_relative_to(target_root):
+            remapped[str(skills[0].relative_to(workspace))]=content
+            continue
+        if len(matches)==1:
+            remapped[str(matches[0].relative_to(workspace))]=content
+            continue
+        raise ValueError('path outside target: '+path)
+    return remapped
 
 
 def _stable_model(model):
@@ -156,10 +184,15 @@ def _evidence(result, workspace, before, secrets):
 
 def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
              baseline_model=None, baseline_provider=None, effort=None, cases=4,
-             force=False, resume=None, workspace=None, repeats=3, execution='current'):
+             force=False, resume=None, workspace=None, repeats=3, execution='current',
+             native_home=None):
     _validate_execution(execution,budget_usd)
-    if execution == 'current' and (mode in ('speed','cost') or baseline_provider):
-        raise ValueError('Model/provider comparisons require --execution api; current execution supports steps, structure or all')
+    if execution == 'api' and runner == 'grok':
+        raise ValueError('Grok has no metered API-gateway adapter; use --execution current')
+    if execution == 'current' and baseline_provider:
+        raise ValueError('Provider comparisons require --execution api')
+    if execution == 'current' and mode in ('speed','cost') and runner != 'grok':
+        raise ValueError('Current model/effort comparison is implemented for grok; Claude/Codex still need --execution api')
     if mode not in {'all','steps','speed','cost','structure'}:
         raise ValueError('Unknown optimization mode')
     if cases < 4:
@@ -191,9 +224,11 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
             'recommendations':[],'provisional_candidates':[], 'mode':mode,
             'confirmation_repeats':repeats,'execution':execution,'cost_savings_verified':False,
             'scope':'recorded environment and generated cases only'}
-    profile=capture_profile(runner,workspace,model=baseline_model,effort=effort, current=execution=='current')
+    native_home=Path(native_home).expanduser().resolve() if native_home else None
+    profile=capture_profile(runner,workspace,model=baseline_model,effort=effort, current=execution=='current', native_home=native_home)
     if profile.get('requires_external_fixture') and not profile.get('external_isolation_verified'):
-        raise ValueError('Native hooks/MCP require an independently isolated external fixture before optimization')
+        raise ValueError('Native hooks/MCP require an independently isolated external fixture before optimization. '
+                         'Run harness-opt isolate --runner '+runner+' then retry with --native-home <destination>')
     effort=profile.get('effort')
     providers,models={},[]
     if execution == 'api':
@@ -209,7 +244,9 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
         if baseline is None:
             raise ValueError('Baseline model must match the captured native configuration and a discovered model')
     else:
-        baseline={'id':profile.get('model') or 'native-default','provider':'native','efforts':[effort]}
+        baseline={'id':profile.get('model') or 'native-default','provider':'native','efforts':[effort] if effort else []}
+        if runner=='grok' and mode in {'all','speed','cost'}:
+            models=native_models(runner,profile)
     snapshot=WorkspaceSnapshot(workspace,directory/('snapshot-'+uuid.uuid4().hex[:8]))
     skill_files=public_skill_files(target)
     if not skill_files:
@@ -234,16 +271,20 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
     store.put('run',run_id,report)
 
     def call(prompt,model,work,selected_effort=effort,target_path=None,entrypoint=None):
-        if not budget.time_left or execution == 'api' and not budget.remaining:
-            raise BudgetExceeded('Budget or time limit reached')
+        if execution == 'api' and not budget.remaining:
+            raise BudgetExceeded('Budget reached')
+        timeout=budget.start_invocation()
         if execution == 'current':
-            active=dict(profile,entrypoint=entrypoint,evaluation_only=target_path is None)
-            result=execute(active,work,prompt,None,budget.time_left,target=target_path)
+            selected_model=model.get('id') if isinstance(model,dict) and model.get('id') not in (None,'native-default') else profile.get('model')
+            chosen_effort=profile.get('effort') if selected_effort is None else selected_effort
+            active=dict(profile,model=selected_model,effort=chosen_effort,
+                        entrypoint=entrypoint,evaluation_only=target_path is None)
+            result=execute(active,work,prompt,None,timeout,target=target_path)
             result.update(cost_usd=None,calls=[],compatibility_errors=[])
         else:
             with Gateway(providers[model['provider']],model,budget,effort=selected_effort) as gateway:
                 active=dict(profile,model=model['id'],effort=selected_effort,gateway_api_key=gateway.api_key,entrypoint=entrypoint,evaluation_only=target_path is None)
-                result=execute(active,work,prompt,gateway.base_url,budget.time_left,target=target_path)
+                result=execute(active,work,prompt,gateway.base_url,timeout,target=target_path)
             result.update(cost_usd=gateway.cost,calls=gateway.records,compatibility_errors=gateway.compatibility_errors)
             if gateway.compatibility_errors:
                 result['status']='compatibility_failure'
@@ -264,8 +305,6 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
         _write_report(directory,report)
         if 'budget' in errors:
             raise BudgetExceeded('Gateway could not reserve the next call within the configured budget')
-        if result.get('status') == 'timeout':
-            raise TimeoutError('Native execution exhausted the time limit')
         return result
 
     def judge(case,base,candidate,swapped):
@@ -342,16 +381,20 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
                         f'Return ONLY JSON {{"cases":[...]}} with exactly {cases} cases (at least 2 normal, 1 boundary, 1 failure). '
                         'Each case has kind, prompt, criteria (requirements based ONLY on original instructions), files (relative path:text fixtures), '
                         'required_files (paths), file_contains (path:list of literal strings only where semantically required), external_services (list). '
+                        'Every file_contains token must appear verbatim in that case prompt as required output and in the original skill text; '
+                        'do not require internal identifiers the prompt does not ask the agent to write. '
                         'Use fully local reproducible tasks. Do not execute the skill.\n'+json.dumps({entry:source}))
                 generated=call(prompt,baseline,work)
                 if not _success(generated):
                     raise ValueError('Case generation did not complete: '+generated['status']+'; '+generated.get('reason',''))
                 entry_cases=validate_cases(json_output(_native_text(generated['output'])),cases)
+                entry_cases=constrain_file_contains(entry_cases,source)
                 for case in entry_cases:
                     case['entrypoint']=entry
                     case['id']=f'{entry}:{case["id"]}'
                 case_set.extend(entry_cases)
             store.put('cases',case_key,case_set)
+        case_set=constrain_file_contains(case_set,'\n'.join(original.values()))
         for case in case_set:
             for fixture in case.get('files',{}):
                 from .evaluation import safe_path
@@ -385,16 +428,22 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
                 work=snapshot.restore(directory/('proposal-work-'+uuid.uuid4().hex[:8]))
                 patterns_path=Path(__file__).resolve().parent/'data'/'patterns.json'
                 patterns=json.loads(patterns_path.read_text()) if kind=='structure' and patterns_path.exists() else []
+                allowed=[str(path.relative_to(workspace)) for path in skill_files]
                 proposal=call('Propose ONE '+kind+' optimization. Preserve every user requirement, output, security and permission condition. '
                     'Consolidate duplicate instructions, extract optional reads into references, or repeated work into scripts. '
                     'Return ONLY JSON {"changes":{"relative file path within the target":"complete replacement text"},"reason":"..."}. '
+                    'Change paths must be workspace-relative files inside the target. Allowed paths: '+json.dumps(allowed)+'. '
                     'Do not use heldout cases.\n'+json.dumps({'skills':original,'patterns':patterns}),baseline,work)
                 if not _success(proposal):
                     continue
-                changes=_proposal_changes(proposal['output'])
+                target_root=target.parent if target.is_file() else target
+                try:
+                    changes=_remap_proposal_paths(_proposal_changes(proposal['output']),workspace,target_root,skill_files)
+                except ValueError as exc:
+                    report['reasons'].append(f'{kind}: {exc}')
+                    continue
                 valid=bool(changes)
                 from .evaluation import safe_path
-                target_root=target.parent if target.is_file() else target
                 for path,content in changes.items():
                     try:
                         changed=safe_path(workspace,path)
@@ -415,14 +464,17 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
                 record=trial(kind,baseline,changes,effort,explore)
                 if record['status']=='passed':
                     passing.append(record)
-        if execution == 'api' and mode in {'all','speed','cost'}:
-            for model in sorted(models,key=lambda m:m.get('input_per_million') if m.get('input_per_million') is not None else float('inf')):
-                if any(model.get(k) is None for k in ('input_per_million','output_per_million','context_window')):
+        if mode in {'all','speed','cost'} and models:
+            priced=execution=='api'
+            ordered=sorted(models,key=lambda m:m.get('input_per_million') if m.get('input_per_million') is not None else float('inf'))
+            for model in ordered:
+                if priced and any(model.get(k) is None for k in ('input_per_million','output_per_million','context_window')):
                     continue
                 for candidate_effort in model.get('efforts') or []:
-                    if model==baseline and candidate_effort==effort:
+                    if model.get('id')==baseline.get('id') and candidate_effort==effort:
                         continue
-                    record=trial(f'{model["provider"]}/{model["id"]}:{candidate_effort}',model,{},candidate_effort,explore)
+                    label=candidate_effort or 'default'
+                    record=trial(f'{model["provider"]}/{model["id"]}:{label}',model,{},candidate_effort,explore)
                     if record['status']=='passed':
                         passing.append(record)
         # Confirmation includes held-out cases; fewer than three runs stay provisional.
@@ -489,7 +541,7 @@ def optimize(target, runner, mode, budget_usd, time_limit, state_dir, env_file,
                         (copy/p).write_text(content)
                         diff.extend(difflib.unified_diff(((workspace/p).read_text() if (workspace/p).exists() else '').splitlines(True),content.splitlines(True),fromfile=p,tofile=p))
                     (directory/f'approved-{index}.diff').write_text(''.join(diff))
-                    replay_profile=dict(profile,model=final['model']['id'],effort=final['effort']) if execution=='api' else dict(profile)
+                    replay_profile=dict(profile,model=final['model']['id'],effort=final['effort'])
                     replay={'execution':execution,'runner_profile':replay_profile, 'provider':final['model']['provider'],'model':final['model'],'workspace':str(copy),'target':str(copy/relative),'verified_scope':report['scope'],'confirmation_repeats':repeats,'approved_hash':WorkspaceSnapshot(copy,directory/('integrity-'+uuid.uuid4().hex[:8])).fingerprint}
                     replay_path=directory/f'profile-{index}.json'
                     replay_path.write_text(json.dumps(replay,indent=2))
@@ -565,15 +617,14 @@ def run_profile(profile_path, task, budget_usd, time_limit, env_file=None, works
             target=target.parent/'skill'/approved_target.name
         else:
             shutil.copytree(approved_target,target)
-        if not budget.time_left:
-            raise TimeoutError('Workspace preparation exhausted the time limit')
+        timeout=budget.start_invocation()
         if execution == 'current':
-            result=execute(data['runner_profile'],work,task,None,budget.time_left,target=target)
+            result=execute(data['runner_profile'],work,task,None,timeout,target=target)
             result.update(cost_usd=None,compatibility_errors=[],cost_status='unknown')
         else:
             with Gateway(providers[data['provider']],selected,budget,effort=data['runner_profile'].get('effort')) as gateway:
                 active=dict(data['runner_profile'],gateway_api_key=gateway.api_key)
-                result=execute(active,work,task,gateway.base_url,budget.time_left,target=target)
+                result=execute(active,work,task,gateway.base_url,timeout,target=target)
             result.update(cost_usd=gateway.cost,compatibility_errors=gateway.compatibility_errors)
             if gateway.compatibility_errors or not gateway.records:
                 result['status']='unverified'

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from harness_opt.runner import WorkspaceSnapshot, capture_profile, execute, _activate, native_usage
+from harness_opt.runner import WorkspaceSnapshot, capture_profile, execute, isolate, native_models, parse_grok_effort_error, parse_grok_models, _activate, native_usage
 
 
 class RunnerTests(unittest.TestCase):
@@ -188,6 +188,202 @@ class RunnerTests(unittest.TestCase):
             with patch('harness_opt.runner._configuration', return_value=({}, {})), patch.dict(os.environ, {}, clear=True):
                 with self.assertRaises(ValueError):
                     capture_profile('codex', root)
+
+    def test_isolate_strips_hooks_mcp_and_verifies_capture(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            home = root / 'home'
+            (home / '.codex').mkdir(parents=True)
+            (home / '.codex/config.toml').write_text('model="gpt-test"\nmodel_reasoning_effort="low"\n\n[mcp_servers.fs]\ncommand="npx"\n\n[hooks.state]\nfoo="bar"\n')
+            (home / '.codex/auth.json').write_text('{"access_token":"fixture-private-token"}')
+            (home / '.codex/hooks.json').write_text('{"hooks":{"Stop":[]}}')
+            fixture, source = root / 'native-home', root / 'source'
+            source.mkdir()
+            binary = root / 'codex'
+            binary.write_text('#!/usr/bin/env python3\nimport sys\nif "--version" in sys.argv: print("fake 1")\n')
+            binary.chmod(0o755)
+            with patch('pathlib.Path.home', return_value=home), patch.dict(os.environ, {'PATH': os.environ['PATH'], 'CODEX_HOME': str(home / '.codex')}, clear=True), patch('shutil.which', return_value=str(binary)):
+                live = capture_profile('codex', source, current=True)
+                self.assertTrue(live['requires_external_fixture'])
+                self.assertFalse(live['external_isolation_verified'])
+                result = isolate('codex', fixture)
+                self.assertEqual(result['status'], 'isolated')
+                self.assertTrue(result['external_isolation_verified'])
+                self.assertFalse((fixture / '.codex/hooks.json').exists())
+                self.assertNotIn('mcp_servers', (fixture / '.codex/config.toml').read_text())
+                self.assertNotIn('hooks', (fixture / '.codex/config.toml').read_text())
+                self.assertEqual(json.loads((fixture / '.codex/auth.json').read_text())['access_token'], 'fixture-private-token')
+                reused = isolate('codex', fixture)
+                self.assertTrue(reused.get('reused'))
+                isolated = capture_profile('codex', source, current=True, native_home=fixture)
+                self.assertFalse(isolated['requires_external_fixture'])
+                self.assertTrue(isolated['external_isolation_verified'])
+                self.assertEqual(isolated['model'], 'gpt-test')
+                self.assertEqual(isolated['effort'], 'low')
+                self.assertEqual(isolated['native_home'], str(fixture.resolve()))
+                self.assertEqual(json.loads((home / '.codex/auth.json').read_text())['access_token'], 'fixture-private-token')
+
+    def test_isolate_rejects_live_paths_and_dirty_destinations(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            home = root / 'home'
+            (home / '.codex').mkdir(parents=True)
+            (home / '.codex/config.toml').write_text('model="x"\n')
+            dirty = root / 'dirty'
+            dirty.mkdir()
+            (dirty / 'noise.txt').write_text('keep')
+            with patch('pathlib.Path.home', return_value=home), patch.dict(os.environ, {'CODEX_HOME': str(home / '.codex')}, clear=True):
+                with self.assertRaisesRegex(ValueError, 'live user home'):
+                    isolate('codex', home)
+                with self.assertRaisesRegex(ValueError, 'live native'):
+                    isolate('codex', home / '.codex')
+                with self.assertRaisesRegex(ValueError, 'plugin'):
+                    isolate('codex', Path(__import__('harness_opt.runner', fromlist=['runner']).__file__).resolve().parent / 'fixture-home')
+                with self.assertRaisesRegex(ValueError, '--force'):
+                    isolate('codex', dirty)
+                replaced = isolate('codex', dirty, force=True)
+                self.assertFalse((dirty / 'noise.txt').exists())
+                self.assertTrue((dirty / '.harness-opt-isolation.json').is_file())
+                self.assertEqual(replaced['status'], 'isolated')
+
+    def test_execute_uses_native_home_instead_of_live_mcp(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            home = root / 'home'
+            (home / '.codex').mkdir(parents=True)
+            (home / '.codex/config.toml').write_text('model="live"\nmodel_reasoning_effort="high"\n\n[mcp_servers.prod]\ncommand="npx"\n')
+            (home / '.codex/auth.json').write_text('{"access_token":"fixture-private-token"}')
+            source, workspace, fixture = root / 'source', root / 'workspace', root / 'native-home'
+            source.mkdir()
+            workspace.mkdir()
+            binary = root / 'codex'
+            binary.write_text('#!/usr/bin/env python3\nimport sys,os,pathlib,json,tomllib\nif "--version" in sys.argv: print("fake 1");sys.exit()\nconfig=tomllib.loads((pathlib.Path(os.environ["CODEX_HOME"])/"config.toml").read_text())\nassert "mcp_servers" not in config\nassert json.loads((pathlib.Path(os.environ["CODEX_HOME"])/"auth.json").read_text())["access_token"]=="fixture-private-token"\nprint(json.dumps({"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}))\n')
+            binary.chmod(0o755)
+            with patch('pathlib.Path.home', return_value=home), patch.dict(os.environ, {'PATH': os.environ['PATH'], 'CODEX_HOME': str(home / '.codex')}, clear=True), patch('shutil.which', return_value=str(binary)):
+                isolate('codex', fixture)
+                profile = capture_profile('codex', source, current=True, native_home=fixture)
+                result = execute(profile, workspace, 'work', None, 10)
+                self.assertEqual(result['status'], 'completed', result)
+                self.assertTrue(result['external_isolation_verified'])
+                (fixture / '.codex/config.toml').write_text('model="live"\n\n[mcp_servers.back]\ncommand="npx"\n')
+                with self.assertRaisesRegex(ValueError, 'isolated'):
+                    capture_profile('codex', source, current=True, native_home=fixture)
+
+    def test_isolate_claude_keeps_login_json_without_mcp(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            home = root / 'home'
+            (home / '.claude').mkdir(parents=True)
+            (home / '.claude/settings.json').write_text(json.dumps({'model': 'claude-test', 'effortLevel': 'high', 'hooks': {'Stop': []}, 'mcpServers': {'fs': {'command': 'npx'}}}))
+            (home / '.claude.json').write_text(json.dumps({'mcpServers': {'fs': {'command': 'npx'}}, 'oauthToken': 'fixture-oauth'}))
+            fixture = root / 'native-home'
+            with patch('pathlib.Path.home', return_value=home), patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': str(home / '.claude')}, clear=True):
+                isolate('claude', fixture)
+                settings = json.loads((fixture / '.claude/settings.json').read_text())
+                login = json.loads((fixture / '.claude.json').read_text())
+                self.assertEqual(settings, {'model': 'claude-test', 'effortLevel': 'high'})
+                self.assertEqual(login.get('oauthToken'), 'fixture-oauth')
+                self.assertNotIn('mcpServers', login)
+                self.assertNotIn('hooks', settings)
+
+    def test_parse_grok_models_does_not_invent_ids(self):
+        listed = parse_grok_models('You are logged in with grok.com.\n\nDefault model: grok-4.6\n\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n')
+        self.assertEqual(listed, ['grok-4.6', 'grok-4.5'])
+        self.assertEqual(parse_grok_models('no models here'), [])
+        self.assertEqual(parse_grok_effort_error("unknown effort level 'xhigh'; use one of: high, medium, low"),
+                         ['high', 'medium', 'low'])
+        with tempfile.TemporaryDirectory() as folder:
+            binary = Path(folder) / 'grok'
+            binary.write_text(
+                '#!/usr/bin/env python3\nimport sys\n'
+                'if "models" in sys.argv:\n print("  * grok-4.6")\n print("  - grok-4.5"); sys.exit(0)\n'
+                'model=sys.argv[sys.argv.index("--model")+1] if "--model" in sys.argv else ""\n'
+                'allowed="high, medium, low, xhigh" if model=="grok-4.6" else "high, medium, low"\n'
+                'print("unknown effort level \'probe\'; use one of: "+allowed, file=sys.stderr)\n'
+                'sys.exit(1)\n')
+            binary.chmod(0o755)
+            with patch('shutil.which', return_value=str(binary)):
+                models = native_models('grok', {'model': 'grok-4.6', 'effort': 'xhigh'})
+            efforts = {m['id']: m['efforts'] for m in models}
+            self.assertEqual(efforts['grok-4.6'], ['xhigh'])
+            self.assertEqual(efforts['grok-4.5'], [''])
+            self.assertEqual(native_models('codex', {'effort': 'high'}), [])
+
+    def test_grok_usage_activate_isolate_and_prompt_file(self):
+        grok_json = json.dumps({
+            'text': 'done', 'stopReason': 'end_turn',
+            'usage': {'input_tokens': 3, 'output_tokens': 2, 'cache_read_input_tokens': 1,
+                      'cache_creation_input_tokens': 0, 'reasoning_tokens': 4},
+            'total_cost_usd': 0.01, 'modelUsage': {'grok-4.6': {'inputTokens': 3}},
+        })
+        usage = native_usage(grok_json, 'grok')
+        self.assertEqual(usage['input_tokens'], 4)
+        self.assertEqual(usage['output_tokens'], 2)
+        self.assertEqual(usage['cached_input_tokens'], 1)
+        self.assertEqual(usage['reasoning_tokens'], 4)
+        self.assertEqual(usage['reported_cost_usd'], 0.01)
+        self.assertIsNone(native_usage(json.dumps({'type': 'error', 'message': 'fail'}), 'grok')['input_tokens'])
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            plugin = root / 'plugin'
+            (plugin / '.claude-plugin').mkdir(parents=True)
+            (plugin / '.claude-plugin/plugin.json').write_text('{"name":"demo"}')
+            (plugin / 'skills/review').mkdir(parents=True)
+            (plugin / 'skills/review/SKILL.md').write_text('---\nname: review\n---\nWork.')
+            workspace = root / 'workspace'
+            workspace.mkdir()
+            args, prompt = _activate('grok', workspace, plugin)
+            self.assertEqual(args, [])
+            self.assertEqual(prompt, '/demo:review\n')
+            self.assertTrue((workspace / '.harness-plugins/plugin/skills/review/SKILL.md').is_file())
+            skill = root / 'skill'
+            skill.mkdir()
+            (skill / 'SKILL.md').write_text('---\nname: demo\n---\nDo work.')
+            args, prompt = _activate('grok', workspace, skill)
+            self.assertEqual(prompt, '/demo\n')
+            self.assertTrue((workspace / '.grok/skills/demo/SKILL.md').is_file())
+            home = root / 'home'
+            (home / '.grok').mkdir(parents=True)
+            (home / '.grok/config.toml').write_text(
+                '[models]\ndefault="grok-test"\ndefault_reasoning_effort="high"\n\n[mcp_servers.fs]\ncommand="npx"\n')
+            (home / '.grok/auth.json').write_text('{"access_token":"fixture-private-token"}')
+            (home / '.grok/mcp.env').write_text('SECRET=1')
+            fixture = root / 'native-home'
+            source, isolated_work = root / 'source', root / 'eval'
+            source.mkdir()
+            isolated_work.mkdir()
+            binary = root / 'grok'
+            binary.write_text(
+                '#!/usr/bin/env python3\nimport sys,os,json,pathlib,tomllib\n'
+                'if "--version" in sys.argv: print("grok 1");sys.exit()\n'
+                'home=pathlib.Path(os.environ["GROK_HOME"])\n'
+                'config=tomllib.loads((home/"config.toml").read_text())\n'
+                'assert "mcp_servers" not in config\n'
+                'assert json.loads((home/"auth.json").read_text())["access_token"]=="fixture-private-token"\n'
+                'idx=sys.argv.index("--prompt-file")\n'
+                'assert pathlib.Path(sys.argv[idx+1]).read_text().startswith("/demo\\n")\n'
+                'assert "--always-approve" in sys.argv\n'
+                'assert "trusted = true" in (home/"trusted_folders.toml").read_text()\n'
+                'pathlib.Path("result.txt").write_text("done")\n'
+                'print(' + json.dumps(grok_json) + ')\n')
+            binary.chmod(0o755)
+            with patch('pathlib.Path.home', return_value=home), patch.dict(
+                    os.environ, {'PATH': os.environ['PATH'], 'GROK_HOME': str(home / '.grok')}, clear=True), \
+                    patch('shutil.which', return_value=str(binary)):
+                isolate('grok', fixture)
+                self.assertNotIn('mcp_servers', (fixture / '.grok/config.toml').read_text())
+                self.assertEqual(json.loads((fixture / '.grok/auth.json').read_text())['access_token'],
+                                 'fixture-private-token')
+                self.assertFalse((fixture / '.grok/mcp.env').exists())
+                profile = capture_profile('grok', source, current=True, native_home=fixture)
+                self.assertEqual(profile['model'], 'grok-test')
+                self.assertEqual(profile['effort'], 'high')
+                with self.assertRaisesRegex(ValueError, 'no metered API-gateway'):
+                    execute(profile, isolated_work, 'work', 'http://127.0.0.1:9', 10)
+                result = execute(dict(profile, entrypoint=None), isolated_work, 'work', None, 10, target=skill)
+                self.assertEqual(result['status'], 'completed', result)
+                self.assertEqual(result['native_usage']['input_tokens'], 4)
+                self.assertTrue((isolated_work / '.grok/skills/demo/SKILL.md').is_file())
 
 
 if __name__ == '__main__':

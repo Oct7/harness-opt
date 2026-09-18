@@ -10,19 +10,22 @@ paid end-to-end provider compatibility is a release gate, not an established cla
 
 ## Install
 
-Requires macOS or Linux, Python 3.11+, and `claude` or `codex` on PATH.
+Requires macOS or Linux, Python 3.11+, and `claude`, `codex`, or `grok` on PATH.
 
 ```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install ./plugins/harness-opt
-.venv/bin/harness-opt --help
+uv tool install git+https://github.com/Oct7/harness-opt.git
+harness-opt hook install
 ```
+
+`pipx install git+https://github.com/Oct7/harness-opt.git` works the same. From a clone,
+`uv tool install .` or `python3 -m pip install .`. The CLI must be on PATH so host hooks
+can call `harness-opt`.
 
 The plugin directory includes execution code, baseline defaults/capture rules, and
 evaluation definitions. The actual baseline model/effort is resolved at run time
 from native settings or explicit input. Credentials and private results are kept
-outside the distributed plugin. After marketplace installation, install its
-Python package from the installed plugin directory using the same command.
+outside the distributed plugin. After marketplace installation, install the CLI with
+the command above.
 
 Claude Code local marketplace:
 
@@ -40,8 +43,11 @@ codex plugin add harness-opt@harness-opt
 
 Public GitHub marketplace: use `Oct7/harness-opt` in place of the local path in
 either command. Repository: https://github.com/Oct7/harness-opt.
-Invoke the `harness-opt` skill in either tool. It first offers current environment
-improvement (recommended) or API model comparison, then guides target/demo, mode,
+Invoke the `harness-opt` skill in Claude Code, Codex, or Grok. It first asks
+**Skill optimize** or **Class route**. Skill optimize offers current environment
+improvement (recommended) or API model comparison, then global/project scope and a selectable skill list. Class route writes an observational report and hooks (`good`/`bad` at session end), then can calibrate a listed workspace
+task classes (`catalog --view classes`) and records a model/effort pair only.
+It asks separately for mode,
 repetitions and limits. Provider/key setup appears only for API comparison.
 Previously supplied choices are reused for that run; three repetitions are recommended.
 See the official [Claude plugin reference](https://code.claude.com/docs/en/plugins-reference)
@@ -57,8 +63,10 @@ configuration is needed.
 ```sh
 harness_demo_dir=$(mktemp -d)
 cp -R ./plugins/harness-opt/examples/file-skill "$harness_demo_dir/skill"
+harness-opt isolate --runner codex
 harness-opt optimize "$harness_demo_dir/skill" --runner codex --execution current \
-  --mode all --workspace "$harness_demo_dir" --repeats 3 --time-limit 600
+  --mode all --workspace "$harness_demo_dir" --repeats 3 --time-limit 600 \
+  --native-home "$HOME/.cache/harness-opt/native-home/codex"
 harness-opt report RUN_ID
 harness-opt run /path/to/profile-1.json 'Summarize input.txt' \
   --workspace /path/to/project --time-limit 120
@@ -70,7 +78,19 @@ metric. Dollars stay `unknown`, even if a native CLI supplies a cost estimate.
 Existing account charges and quotas apply; this path cannot enforce a dollar cap.
 Use API comparison when you need a metered USD limit or model/effort comparisons.
 
+Class calibrate replays four historical prompts (two normal, one boundary, one
+failure) for a workspace task class and writes only `{model, effort}`:
+
+```sh
+harness-opt catalog --scope project --runner codex --workspace /path/to/project --view classes
+harness-opt calibrate --class debug_investigate --runner codex --execution current \
+  --repeats 3 --time-limit 600 --workspace /path/to/project \
+  --native-home "$HOME/.cache/harness-opt/native-home/codex"
+```
+
 Native credential files and environment are preserved in copied configuration.
+When live hooks/MCP exist, `isolate` copies login plus model/effort into a fake HOME
+and `optimize --native-home` uses that fixture instead of the live config tree.
 Keychain-only login can be unavailable under isolated HOME/config paths, producing
 an unverified authentication failure. Actual subscription/keychain login is not yet
 verified. Session-only model/effort overrides need explicit reproduction with
@@ -128,21 +148,25 @@ harness-opt run /path/to/profile-1.json 'Summarize input.txt' \
   --workspace /path/to/project --budget-usd 1 --time-limit 120
 ```
 
-Time limits (seconds) are required for both paths. USD limits are required only for
-API execution and are refused for current execution, which cannot enforce them.
+`--time-limit` is wall-clock seconds **per native invocation**, not a countdown for
+the whole optimize run. USD limits are required only for API execution and are
+refused for current execution, which cannot enforce them.
 Example limits above are illustrative; the skill always asks for missing choices.
 State defaults to `~/.cache/harness-opt`, outside the experiment workspace; override
 with `--state-dir`. A state directory inside the workspace is rejected to avoid
 recursive snapshots. `--force` bypasses cached cases and quality failures;
 `--resume RUN_ID` resumes compatible saved work. For API runs, `--budget-usd` is the
-cumulative ceiling including earlier invocations; `--time-limit` starts a new window.
+cumulative ceiling including earlier invocations; `--time-limit` is per native
+invocation and is not shortened by earlier calls.
 Replay profiles retain their execution path. Profiles from before 0.2.0 default to
 API replay; existing optimization scripts must now add `--execution api` explicitly.
 
 ## Evaluation and outputs
 
-Current modes: `steps`, `structure`, or `all` (default). API execution also supports
-`speed` and `cost`; its `all` covers all four modes. Original requirements
+Current modes: `steps`, `structure`, or `all` (default). Grok current also compares
+IDs from `grok models` at the captured effort (`speed`/`cost`, and as part of `all`);
+dollars stay unknown. API execution also supports `speed` and `cost`; its `all`
+covers all four modes. Original requirements
 are frozen before proposals. Direct artifact checks precede blinded baseline-model
 judgment. Finalists receive reversed-order judgment and `--repeats` executions per
 case (default/recommended: 3). One or two repetitions are allowed for quick trials
@@ -186,17 +210,18 @@ CI covers Python 3.11 and 3.13 on Linux and macOS. Local validation uses Claude 
 successfully using temporary HOME/config directories, without changing user settings.
 Both actual CLIs also completed text and file-tool round trips against loopback
 providers in both execution paths (eight scenarios, twelve provider requests).
-The 59-test unit/integration suite requires no paid APIs. Native-reported token
+The 67-test unit/integration suite requires no paid APIs. Native-reported token
 totals and gateway usage/stream timing are checked separately; these fake-provider
 runs do not establish real subscription authentication or paid-provider compatibility.
 
 Before a stable release, supply a provider and explicit paid budget, verify real file
 work, hooks and subagents end to end in both runners, then promote the development preview to a stable release. Baseline capture covers explicit model/effort and native files on disk; session-only
-overrides are not automatically recovered. Hook/MCP optimization is currently
-blocked unless external isolation can be verified (no fixture-approval CLI is shipped).
-Linked worktrees and symlinked workspaces are rejected. Unsupported cross-protocol
+overrides are not automatically recovered. Live hooks/MCP block `optimize` until
+`harness-opt isolate` creates an approved fake HOME and `--native-home` is passed.
+The fixture keeps model/effort and login files and omits live hooks/MCP; it is not
+an operating-system sandbox. Linked worktrees and symlinked workspaces are rejected. Unsupported cross-protocol
 reasoning, Anthropic beta features and hosted/media tools fail compatibility instead
-of being silently dropped. A directory copy alone is not an operating-system sandbox. Do not use production
+of being silently dropped. Do not use production
 service credentials or targets as evaluation fixtures.
 
 Reference pattern provenance is in `plugins/harness-opt/references/patterns.json`.
@@ -210,7 +235,9 @@ Other execution harnesses and provider tools are surveyed in the bundled
 Pi, Aider, Cline and Copilot CLI are researched candidates, not implemented runners.
 opencodex/LiteLLM are transport options; Ollama supplies model inference.
 
-The selected next adapter priorities are **OpenCode, then Pi**. Users should use
+Grok is implemented for current native execution (`--runner grok`). Metered API
+comparison still uses Claude Code or Codex. The selected next adapter priorities
+are **OpenCode, then Pi**. Users should use
 one existing harness, not install every harness. A direct API answer benchmark can
 compare model responses and usage, but cannot establish native tool/hook/MCP skill
 behavior; no standalone direct-API evaluation mode is implemented.

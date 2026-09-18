@@ -7,7 +7,7 @@
     {
       "name": "harness-opt",
       "source": "./plugins/harness-opt",
-      "description": "Evaluate and optimize skills with native Claude Code and Codex runners."
+      "description": "Classify session work, report model/effort, and optimize skills."
     }
   ],
   "description": "Native coding-agent skill evaluation and optimization"

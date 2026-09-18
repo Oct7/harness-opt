@@ -15,12 +15,18 @@ class Budget:
         if not all(type(v) in (int, float) and math.isfinite(v) and v > 0 for v in limits):
             raise ValueError('Budget and time limit must be finite and positive')
         self.limit_usd = limit_usd
-        self.deadline = time.monotonic() + time_limit
+        self.time_limit = time_limit
+        self._invocation_deadline = None
         self.spent = 0.0
         self.reservations = {}
         self.lock = threading.RLock()
         self.uncertain = False
         self.on_change = on_change
+
+    def start_invocation(self):
+        with self.lock:
+            self._invocation_deadline = time.monotonic() + self.time_limit
+            return self.time_limit
 
     @property
     def remaining(self):
@@ -31,7 +37,10 @@ class Budget:
 
     @property
     def time_left(self):
-        return max(0.0, self.deadline - time.monotonic())
+        with self.lock:
+            if self._invocation_deadline is None:
+                return self.time_limit
+            return max(0.0, self._invocation_deadline - time.monotonic())
 
     def reserve(self, max_cost):
         with self.lock:

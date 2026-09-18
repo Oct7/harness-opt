@@ -1,3 +1,39 @@
+# 0.3.0 development preview
+
+`calibrate` replays historical task-class cases and writes only `{model, effort}`
+into `{state-dir}/model-routing/routing.json`. It does not call `optimize` and does
+not rewrite skill text. `catalog --view classes` lists workspace-local classes and
+whether each one has two normal, one boundary, and one failure case.
+
+Install with `uv tool install git+https://github.com/Oct7/harness-opt.git`, then
+`harness-opt hook install`. Class route adds `report`, `route`, `feedback`, and
+`hook install`. The observational
+report lists every model the host agent exposes and stays at or below the current
+ceiling. The start hook asks to drop a higher pair. The end hook asks `good` / `bad`
+only. Neither hook changes the live model.
+
+`--runner cursor` is an error on `calibrate`/`optimize`. Cursor recommendations are
+`unverified`. Claude/Codex `--execution current` compares every listed host model
+at or below the captured ceiling. Grok current still uses `native_models()`.
+Routing writes verified winners only on `verified_improvement`; `report` writes
+`observed` without deleting verified rows.
+
+---
+
+# 0.2.1 development preview
+
+`--time-limit` is per native invocation. It no longer counts down across the whole
+optimize run, so case generation cannot starve later baselines.
+
+`--runner grok` runs current-environment optimization through the Grok CLI
+(`--prompt-file`, `--output-format json`, isolated `$GROK_HOME`). Catalog reads
+`~/.grok` skills, installed plugins, and prompt history. Grok current `speed`/`cost`
+(and `all`) compare IDs from `grok models` at the captured effort using time and
+reported tokens; dollars stay unknown. Metered API comparison is still Claude Code
+or Codex only.
+
+---
+
 # 0.2.0 development preview
 
 The skill now offers current environment improvement (recommended) and optional
@@ -26,8 +62,10 @@ usage parsing, error classification and existing API flows. Both actual CLIs pas
 eight text/file-tool scenarios against loopback fake providers (twelve requests):
 Claude Code 2.1.263, Codex CLI 0.154.0, LiteLLM 1.100.1. No paid providers or real
 subscription/keychain credentials were used. Keychain-only native authentication
-in copied configuration remains unverified, as do paid compatibility and external
-hook/MCP fixtures. OpenCode then Pi remain planned adapters.
+in copied configuration remains unverified, as do paid compatibility and
+hook/MCP behavior inside live configs. `harness-opt isolate` plus `--native-home`
+approves a fake HOME that omits live hooks/MCP so evaluation can start. OpenCode
+then Pi remain planned adapters.
 
 ---
 
