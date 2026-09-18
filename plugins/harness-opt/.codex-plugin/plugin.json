@@ -1,7 +1,7 @@
 {
   "name": "harness-opt",
-  "version": "0.2.0",
-  "description": "Evaluate and optimize skills with native Claude Code and Codex runners.",
+  "version": "0.3.0",
+  "description": "Classify session work, report model/effort below the host catalog ceiling, and ask via hooks.",
   "license": "MIT",
   "skills": "./skills/",
   "interface": {

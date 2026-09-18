@@ -1,5 +1,6 @@
 import contextlib
 import io
+from pathlib import Path
 import unittest
 from harness_opt.cli import parser, main
 
@@ -19,7 +20,7 @@ class CliTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as exit:
             main(['--version'])
         self.assertEqual(exit.exception.code, 0)
-        self.assertIn('0.2.0', out.getvalue())
+        self.assertIn('0.3.0', out.getvalue())
 
     def test_repetition_count_validation(self):
         argv = ['optimize', '.', '--runner', 'codex', '--time-limit', '60']
@@ -39,3 +40,23 @@ class CliTests(unittest.TestCase):
             with self.subTest(flags=flags), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as error:
                 self.assertEqual(main([*base, *flags]), 1)
                 self.assertIn(message, error.getvalue())
+
+    def test_isolate_and_native_home_flags(self):
+        isolated = parser().parse_args(['isolate', '--runner', 'codex', '--destination', '/tmp/native-home'])
+        self.assertEqual(isolated.command, 'isolate')
+        self.assertEqual(isolated.destination, Path('/tmp/native-home'))
+        self.assertFalse(isolated.force)
+        args = parser().parse_args(['optimize', '.', '--runner', 'codex', '--time-limit', '10', '--native-home', '/tmp/native-home'])
+        self.assertEqual(args.native_home, Path('/tmp/native-home'))
+        grok = parser().parse_args(['catalog', '--scope', 'global', '--runner', 'grok'])
+        self.assertEqual(grok.runner, 'grok')
+        classes = parser().parse_args(['catalog', '--scope', 'project', '--runner', 'codex', '--view', 'classes'])
+        self.assertEqual(classes.view, 'classes')
+        calibrate = parser().parse_args(['calibrate', '--class', 'debug_investigate', '--runner', 'codex', '--time-limit', '10'])
+        self.assertEqual(calibrate.command, 'calibrate')
+        self.assertEqual(calibrate.task_class, 'debug_investigate')
+        self.assertEqual(calibrate.execution, 'current')
+
+    def test_report_command_exists(self):
+        args = parser().parse_args(['report', '--runner', 'codex'])
+        self.assertEqual(args.command, 'report')

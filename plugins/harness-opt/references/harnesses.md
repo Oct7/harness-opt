@@ -1,10 +1,12 @@
 # Harness and model-connection survey
 
-Checked 2026-09-13 against the primary sources below. These are integration candidates,
-not newly supported harness-opt runners. Only `claude` and `codex` are implemented.
+Checked 2026-09-16 against the primary sources below. Implemented runners are
+`claude`, `codex`, and `grok` (`grok` is current-environment only). The rest remain
+integration candidates.
 
 | Layer | Tool | Evidence and integration implication |
 | --- | --- | --- |
+| Execution harness | [Grok CLI](https://github.com/xai-org/grok) | Headless `--prompt-file` / `--output-format json`, `$GROK_HOME` (`~/.grok`), plugin/skill discovery, `--always-approve` for noninteractive evaluation. Implemented for `--execution current`. No metered API-gateway adapter yet. |
 | Execution harness | [OpenCode](https://opencode.ai/docs/cli/) | Noninteractive `opencode run`, JSON events, model/variant selection; [native SKILL.md discovery](https://opencode.ai/docs/skills/). Local CLI 1.18.23 help confirmed; current v2 docs must not be assumed to match v1 configuration. Requires native configuration capture and metered tool-call validation before an adapter is enabled. |
 | Execution harness | [Gemini CLI](https://geminicli.com/docs/cli/headless/) | Prompt mode and JSON/JSONL responses expose usage and tool events. Requires native configuration capture and Gemini protocol metering. |
 | Execution harness | [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) | Print, JSON and RPC modes with skills and provider/model configuration; needs its own session/configuration adapter. |
@@ -17,7 +19,7 @@ not newly supported harness-opt runners. Only `claude` and `codex` are implement
 
 Implementation direction: add execution adapters separately from transport/model
 support. A shared SKILL.md is useful, but cannot itself preserve another harness's
-settings, native skill/plugin activation, permissions or usage events. The user-selected adapter order is OpenCode, then Pi. Users should use their own
+settings, native skill/plugin activation, permissions or usage events. Grok is implemented for current native execution. The remaining user-selected adapter order is OpenCode, then Pi. Users should use their own
 harness; they do not need to install all of them. A direct model API test can assess
 response quality/cost, but cannot establish native skill/tool/hook/MCP equivalence.
 No standalone direct-API evaluation mode is implemented.

@@ -5,16 +5,21 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "harness-opt"
 version = "0.3.0"
-description = "Measure native coding-agent skills and validate cheaper, faster configurations"
+description = "Classify session work, report model/effort below the host catalog ceiling, and optimize skills."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["litellm==1.100.1", "python-dotenv>=1.2.2,<2"]
 license = "MIT"
 
+[project.urls]
+Homepage = "https://github.com/Oct7/harness-opt"
+Repository = "https://github.com/Oct7/harness-opt"
+
 [project.scripts]
 harness-opt = "harness_opt.cli:main"
 
 [tool.setuptools.packages.find]
+where = ["plugins/harness-opt"]
 include = ["harness_opt*"]
 
 [tool.setuptools.package-data]

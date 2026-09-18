@@ -1,0 +1,25 @@
+{
+  "description": "Class route start/end hooks. End verdict is good/bad only.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "harness-opt route --host claude --hook-stdin"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "harness-opt feedback --host claude --hook-stdin"
+          }
+        ]
+      }
+    ]
+  }
+}
